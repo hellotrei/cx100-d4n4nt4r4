@@ -1,16 +1,31 @@
 import { chromium } from 'playwright-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import fs from 'fs';
+import path from 'path';
 import { Logger } from './logger.js';
+import { ReportGenerator } from './report-generator.js';
 
 chromium.use(StealthPlugin());
 
 const config = JSON.parse(fs.readFileSync('config.json', 'utf8'));
 const accounts = JSON.parse(fs.readFileSync('accounts.json', 'utf8'));
 const logger = new Logger();
+const report = new ReportGenerator('evidence');
+
+// Create evidence directory
+if (!fs.existsSync('evidence')) {
+  fs.mkdirSync('evidence', { recursive: true });
+}
+
+function sanitizeFilename(email) {
+  return email.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
+}
 
 async function processAccount(account) {
   const { email, password } = account;
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const filename = `${sanitizeFilename(email)}_${timestamp}.png`;
+  const screenshotPath = path.join('evidence', filename);
 
   const browser = await chromium.launch({
     headless: true,
@@ -27,6 +42,8 @@ async function processAccount(account) {
     viewport: { width: 1280, height: 800 },
     locale: 'en-US',
   });
+
+  let voteDetails = {};
 
   try {
     // 1. Login Google first
@@ -51,7 +68,7 @@ async function processAccount(account) {
     logger.log(`[${email}] Google login OK`);
     await googlePage.close();
 
-    // 2. Go DIRECTLY to sector page (bypass email form + Turnstile)
+    // 2. Go DIRECTLY to sector page
     logger.log(`[${email}] Navigating to sector page directly...`);
     const page = await context.newPage();
     const sectorUrl = `${config.voting.baseUrl}${config.voting.pollPath}?ref=${config.vote.ref}&state=sector-${config.vote.subSectorId}-subsector-${config.vote.subSectorId}`;
@@ -81,7 +98,6 @@ async function processAccount(account) {
       text: document.body?.innerText?.substring(0, 500),
     }));
     logger.log(`[${email}] Page: ${pageState.title} — ${pageState.url.substring(0, 80)}`);
-    logger.log(`[${email}] Text: ${pageState.text?.substring(0, 200)}`);
 
     // 4. Wait for GIS to auto-login
     logger.log(`[${email}] Waiting for GIS...`);
@@ -89,31 +105,22 @@ async function processAccount(account) {
     for (let i = 0; i < 30; i++) {
       await page.waitForTimeout(1000);
 
-      // Check for GIS
       const gsiReady = await page.evaluate(() => !!window.google?.accounts?.id);
       if (gsiReady) {
         logger.log(`[${email}] GIS loaded!`);
-
-        // Try to trigger auto-sign-in
         await page.evaluate(() => {
-          try {
-            window.google.accounts.id.prompt();
-          } catch {}
+          try { window.google.accounts.id.prompt(); } catch {}
         });
       }
 
-      // Check for accessToken
       if (accessToken) {
         logger.log(`[${email}] Got accessToken!`);
         break;
       }
 
-      // Check for GIS iframe
       const gsiFrame = page.frames().find(f => f.url().includes('accounts.google.com/gsi'));
       if (gsiFrame) {
         logger.log(`[${email}] Found GIS iframe!`);
-        
-        // Try to click account in iframe
         try {
           const accountBtn = gsiFrame.locator(`[data-email="${email}"]`);
           if (await accountBtn.count() > 0) {
@@ -123,14 +130,11 @@ async function processAccount(account) {
         } catch {}
       }
 
-      // Check for Google auth popup
       const allPages = context.pages();
       for (const p of allPages) {
         const url = p.url();
         if (url.includes('accounts.google.com/o/oauth')) {
           logger.log(`[${email}] Found Google OAuth page!`);
-          
-          // Try to extract token
           const hash = url.split('#')[1];
           if (hash) {
             const params = new URLSearchParams(hash);
@@ -165,7 +169,6 @@ async function processAccount(account) {
 
           logger.log(`[${email}] Storage: ${JSON.stringify(state)}`);
 
-          // Look for token-like values
           for (const [key, value] of Object.entries(state)) {
             if (value?.startsWith('eyJ') || key.includes('token') || key.includes('auth')) {
               logger.log(`[${email}] Found potential token: ${key} = ${value?.substring(0, 50)}`);
@@ -176,19 +179,58 @@ async function processAccount(account) {
       }
     }
 
-    // 6. If we have accessToken, submit vote
+    // 6. Submit vote and capture evidence
     if (accessToken) {
       logger.log(`[${email}] Submitting vote with accessToken...`);
+      
+      // Capture screenshot BEFORE submitting
+      await page.screenshot({ path: screenshotPath, fullPage: true });
+      logger.log(`[${email}] Screenshot saved: ${filename}`);
+
+      // Extract vote details from page
+      voteDetails = await page.evaluate(() => {
+        const text = document.body?.innerText || '';
+        // Try to extract sub-sector and institution from page text
+        const subSectorMatch = text.match(/Sektor[:\s]+([^\n]+)/i);
+        const institutionMatch = text.match(/Institusi[:\s]+([^\n]+)/i);
+        return {
+          subSectorName: subSectorMatch?.[1]?.trim() || null,
+          institutionName: institutionMatch?.[1]?.trim() || null,
+          pageUrl: window.location.href,
+        };
+      });
+
+      // Merge with config data
+      voteDetails = {
+        ...voteDetails,
+        subSectorId: config.vote.subSectorId,
+        institutionId: config.vote.institutionId,
+        selectedFactors: config.vote.selectedFactors,
+        pollSlug: config.vote.pollSlug,
+      };
+
       const result = await submitVote(accessToken);
+      
       if (result.success) {
-        logger.recordResult(email, 'success', { message: 'Vote submitted!' });
+        logger.recordResult(email, 'success', {
+          message: 'Vote submitted!',
+          screenshot: filename,
+          ...voteDetails,
+        });
       } else {
-        logger.recordResult(email, 'failed', { error: `Vote failed: ${result.error}` });
+        logger.recordResult(email, 'failed', {
+          error: `Vote failed: ${result.error}`,
+          screenshot: filename,
+          ...voteDetails,
+        });
       }
     } else {
       // Take screenshot for debugging
-      await page.screenshot({ path: `debug-sector-${email.split('@')[0]}.png`, fullPage: true });
-      logger.recordResult(email, 'failed', { error: 'No accessToken found on sector page' });
+      await page.screenshot({ path: screenshotPath, fullPage: true });
+      logger.recordResult(email, 'failed', {
+        error: 'No accessToken found on sector page',
+        screenshot: filename,
+      });
     }
 
   } finally {
@@ -237,7 +279,11 @@ async function submitVote(accessToken) {
 }
 
 async function main() {
-  logger.log('Testing Option C3: Direct sector page access');
+  logger.log('Starting CX100 Stress Test with Evidence');
+  logger.log(`Target: ${config.vote.pollSlug}`);
+  logger.log(`Accounts: ${accounts.length}`);
+  logger.log('');
+  
   for (const acc of accounts) {
     try {
       await processAccount(acc);
@@ -245,7 +291,19 @@ async function main() {
       logger.recordResult(acc.email, 'failed', { error: error.message });
     }
   }
-  logger.saveResults();
+  
+  // Save results
+  const output = logger.saveResults();
+  
+  // Generate report
+  logger.log('');
+  logger.log('Generating report...');
+  const reportPath = report.generateReport(output.results, config);
+  logger.log(`Report saved to: ${reportPath}`);
+  
+  // List evidence files
+  const evidenceFiles = fs.readdirSync('evidence').filter(f => f.endsWith('.png'));
+  logger.log(`Evidence screenshots: ${evidenceFiles.length}`);
 }
 
 main().catch(e => {

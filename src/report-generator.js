@@ -1,0 +1,219 @@
+import fs from 'fs';
+import path from 'path';
+
+export class ReportGenerator {
+  constructor(outputDir = 'evidence') {
+    this.outputDir = outputDir;
+    if (!fs.existsSync(outputDir)) {
+      fs.mkdirSync(outputDir, { recursive: true });
+    }
+  }
+
+  generateReport(results, config) {
+    const reportData = results.map(r => ({
+      email: r.email,
+      status: r.status,
+      timestamp: r.timestamp,
+      screenshot: r.screenshot || null,
+      details: r.details || {},
+    }));
+
+    const html = this.buildHTML(reportData, config);
+    const reportPath = path.join(this.outputDir, 'report.html');
+    fs.writeFileSync(reportPath, html);
+
+    return reportPath;
+  }
+
+  buildHTML(data, config) {
+    const successful = data.filter(d => d.status === 'success');
+    const failed = data.filter(d => d.status === 'failed');
+
+    return `<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CX100 Stress Test Report</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { 
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0f0f0f; color: #fff; padding: 20px;
+    }
+    .header {
+      text-align: center; padding: 40px 20px;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+      border-radius: 12px; margin-bottom: 30px;
+    }
+    .header h1 { font-size: 28px; margin-bottom: 10px; color: #fff; }
+    .header .subtitle { color: #888; font-size: 14px; }
+    
+    .stats {
+      display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px;
+      margin-bottom: 30px;
+    }
+    .stat-card {
+      background: #1a1a1a; border-radius: 10px; padding: 20px;
+      text-align: center; border: 1px solid #333;
+    }
+    .stat-card .value { font-size: 36px; font-weight: bold; }
+    .stat-card .label { font-size: 12px; color: #888; margin-top: 5px; }
+    .stat-card.success .value { color: #22c55e; }
+    .stat-card.failed .value { color: #ef4444; }
+    .stat-card.total .value { color: #3b82f6; }
+    .stat-card.time .value { color: #f59e0b; font-size: 18px; }
+    
+    .section-title {
+      font-size: 20px; margin: 30px 0 15px; padding-bottom: 10px;
+      border-bottom: 1px solid #333;
+    }
+    
+    .vote-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+      gap: 20px;
+    }
+    
+    .vote-card {
+      background: #1a1a1a; border-radius: 10px; overflow: hidden;
+      border: 1px solid #333; transition: transform 0.2s;
+    }
+    .vote-card:hover { transform: translateY(-2px); }
+    .vote-card.success { border-color: #22c55e; }
+    .vote-card.failed { border-color: #ef4444; }
+    
+    .vote-card .screenshot {
+      width: 100%; height: 200px; object-fit: cover; object-position: top;
+      border-bottom: 1px solid #333; cursor: pointer;
+    }
+    
+    .vote-card .info {
+      padding: 16px;
+    }
+    .vote-card .email {
+      font-weight: 600; font-size: 14px; margin-bottom: 8px;
+      word-break: break-all;
+    }
+    .vote-card .meta {
+      display: flex; gap: 12px; font-size: 12px; color: #888;
+    }
+    .vote-card .meta span { display: flex; align-items: center; gap: 4px; }
+    .vote-card .status-badge {
+      display: inline-block; padding: 4px 10px; border-radius: 20px;
+      font-size: 11px; font-weight: 600; margin-top: 8px;
+    }
+    .vote-card.success .status-badge { background: #22c55e22; color: #22c55e; }
+    .vote-card.failed .status-badge { background: #ef444422; color: #ef4444; }
+    
+    .details { font-size: 12px; color: #666; margin-top: 8px; }
+    .details dt { color: #888; }
+    .details dd { margin-left: 0; margin-bottom: 4px; }
+    
+    .modal {
+      display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(0,0,0,0.95); z-index: 1000; cursor: pointer;
+      justify-content: center; align-items: center;
+    }
+    .modal.active { display: flex; }
+    .modal img {
+      max-width: 90%; max-height: 90%; object-fit: contain; border-radius: 8px;
+    }
+    
+    .footer {
+      text-align: center; padding: 30px; color: #666; font-size: 12px;
+      margin-top: 40px; border-top: 1px solid #333;
+    }
+    
+    @media (max-width: 768px) {
+      .stats { grid-template-columns: repeat(2, 1fr); }
+      .vote-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>🎯 CX100 Stress Test Report</h1>
+    <div class="subtitle">Automated Voting Evidence • ${new Date().toLocaleDateString('id-ID', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</div>
+  </div>
+
+  <div class="stats">
+    <div class="stat-card total">
+      <div class="value">${data.length}</div>
+      <div class="label">Total Akun</div>
+    </div>
+    <div class="stat-card success">
+      <div class="value">${successful.length}</div>
+      <div class="label">Berhasil</div>
+    </div>
+    <div class="stat-card failed">
+      <div class="value">${failed.length}</div>
+      <div class="label">Gagal</div>
+    </div>
+    <div class="stat-card time">
+      <div class="value">${config.vote?.pollSlug || 'CX100'}</div>
+      <div class="label">Target</div>
+    </div>
+  </div>
+
+  <h2 class="section-title">✅ Berhasil Vote (${successful.length})</h2>
+  <div class="vote-grid">
+    ${successful.map((item, idx) => this.buildVoteCard(item, idx)).join('\n')}
+  </div>
+
+  ${failed.length > 0 ? `
+  <h2 class="section-title">❌ Gagal (${failed.length})</h2>
+  <div class="vote-grid">
+    ${failed.map((item, idx) => this.buildVoteCard(item, idx)).join('\n')}
+  </div>
+  ` : ''}
+
+  <div class="modal" id="modal" onclick="this.classList.remove('active')">
+    <img id="modalImg" src="" alt="Screenshot">
+  </div>
+
+  <div class="footer">
+    Generated by CX100 Stress Test • ${new Date().toISOString()}
+  </div>
+
+  <script>
+    function openModal(src) {
+      document.getElementById('modalImg').src = src;
+      document.getElementById('modal').classList.add('active');
+    }
+  </script>
+</body>
+</html>`;
+  }
+
+  buildVoteCard(item, idx) {
+    const screenshotSrc = item.screenshot ? `evidence/${item.screenshot}` : '';
+    const time = item.timestamp ? new Date(item.timestamp).toLocaleString('id-ID') : '-';
+    const subSector = item.details?.subSectorName || item.details?.subSectorId || '-';
+    const institution = item.details?.institutionName || item.details?.institutionId || '-';
+    const factors = item.details?.selectedFactors || [];
+
+    return `
+    <div class="vote-card ${item.status}">
+      ${screenshotSrc ? `<img class="screenshot" src="${screenshotSrc}" alt="Vote evidence" onclick="openModal('${screenshotSrc}')" loading="lazy">` : '<div class="screenshot" style="display:flex;align-items:center;justify-content:center;color:#666;">No screenshot</div>'}
+      <div class="info">
+        <div class="email">📧 ${item.email}</div>
+        <div class="meta">
+          <span>🕐 ${time}</span>
+          <span>#${idx + 1}</span>
+        </div>
+        <div class="status-badge">${item.status === 'success' ? '✅ BERHASIL' : '❌ GAGAL'}</div>
+        ${item.status === 'success' ? `
+        <dl class="details">
+          <dt>Sektor</dt><dd>${subSector}</dd>
+          <dt>Institusi</dt><dd>${institution}</dd>
+          <dt>Faktor</dt><dd>${factors.join(', ') || '-'}</dd>
+        </dl>
+        ` : `
+        <dl class="details">
+          <dt>Error</dt><dd>${item.details?.error || '-'}</dd>
+        </dl>
+        `}
+      </div>
+    </div>`;
+  }
+}

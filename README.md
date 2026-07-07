@@ -60,9 +60,32 @@ Script akan:
 1. Login ke Google untuk setiap akun
 2. Navigasi ke halaman voting
 3. Submit vote otomatis
-4. Log hasil ke `logs/`
+4. Ambil screenshot sebagai evidence
+5. Generate HTML report
 
 ## Output
+
+### Evidence
+
+Screenshot tersimpan di folder `evidence/` dengan format:
+```
+<email>_<timestamp>.png
+```
+
+Contoh:
+```
+juliannehargrove57_gimikol_my_id_2026-07-07T14-43-52-769Z.png
+```
+
+### Report
+
+HTML report dihasilkan di `evidence/report.html` berisi:
+- Summary stats (total, berhasil, gagal)
+- Screenshot evidence per akun
+- Detail voting (sektor, institusi, faktor)
+- Timestamp
+
+### Logs
 
 Log tersimpan di folder `logs/` dengan format:
 - `run-<timestamp>.json` — hasil terstruktur
@@ -71,18 +94,36 @@ Log tersimpan di folder `logs/` dengan format:
 ## Struktur
 
 ```
-├── accounts.json        # Daftar akun email:password
-├── config.json          # Target voting dan faktor
+├── accounts.json          # Daftar akun email:password
+├── config.json            # Target voting dan faktor
 ├── src/
-│   ├── option-c3.js     # Script utama
-│   └── logger.js        # Module logging
-└── logs/                # Output log perjalanan
+│   ├── option-c3.js       # Script utama
+│   ├── logger.js          # Module logging
+│   └── report-generator.js # Generator HTML report
+├── evidence/              # Screenshot + report
+│   ├── *.png              # Screenshot evidence
+│   └── report.html        # HTML report
+└── logs/                  # Log perjalanan
 ```
 
 ## Flow
 
 ```
-Login Google → Navigate voting page → Submit vote → Log result
+Login Google → Navigate voting page → Submit vote → Screenshot → Log result → Generate report
 ```
 
 Setiap akun diproses secara serial (~47 detik/akun).
+
+## Report Preview
+
+Report menampilkan:
+- **Header** — judul dan tanggal
+- **Stats** — total akun, berhasil, gagal, target
+- **Vote Cards** — screenshot + detail per akun
+  - Email
+  - Timestamp
+  - Status (berhasil/gagal)
+  - Sektor & Institusi
+  - Faktor yang dipilih
+
+Klik screenshot untuk zoom in.
