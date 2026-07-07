@@ -1,0 +1,31 @@
+{
+  "vote": {
+    "pollSlug": "cx100-danantara",
+    "ref": "29FqBa9qFCLF7IMw05i_E",
+    "subSectorId": "43988074-7483-4508-bdd0-9beaeacf1fb7",
+    "institutionId": "e5970bda-b59a-41c7-9671-6f4456cc2595",
+    "selectedFactors": [
+      "Mudah menemukan informasi produk dan layanan",
+      "Hasil pembiayaan sesuai dengan yang diharapkan",
+      "Keluhan ditangani dengan cepat dan tuntas"
+    ],
+    "reasonText": ""
+  },
+  "email": {
+    "imapHost": "imap.gmail.com",
+    "imapPort": 993,
+    "domain": "gimikol.my.id"
+  },
+  "google": {
+    "loginUrl": "https://accounts.google.com/signin"
+  },
+  "voting": {
+    "baseUrl": "https://danantaraindonesiacx100.com",
+    "pollPath": "/polls/cx100-danantara"
+  },
+  "settings": {
+    "concurrency": 3,
+    "retryOnTimeout": false,
+    "timeoutMs": 15000
+  }
+}
