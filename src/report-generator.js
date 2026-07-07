@@ -186,7 +186,7 @@ export class ReportGenerator {
   }
 
   buildVoteCard(item, idx) {
-    const screenshotSrc = item.screenshot ? `evidence/${item.screenshot}` : '';
+    const screenshotSrc = item.screenshot || item.details?.screenshot ? `./${item.screenshot || item.details?.screenshot}` : '';
     const time = item.timestamp ? new Date(item.timestamp).toLocaleString('id-ID') : '-';
     const subSector = item.details?.subSectorName || item.details?.subSectorId || '-';
     const institution = item.details?.institutionName || item.details?.institutionId || '-';
