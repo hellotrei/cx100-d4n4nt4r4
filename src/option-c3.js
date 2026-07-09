@@ -1,7 +1,6 @@
 import { chromium } from 'playwright-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import fs from 'fs';
-import path from 'path';
 import { Logger } from './logger.js';
 import { ReportGenerator } from './report-generator.js';
 
@@ -12,20 +11,8 @@ const accounts = JSON.parse(fs.readFileSync('accounts.json', 'utf8'));
 const logger = new Logger();
 const report = new ReportGenerator('evidence');
 
-// Create evidence directory
-if (!fs.existsSync('evidence')) {
-  fs.mkdirSync('evidence', { recursive: true });
-}
-
-function sanitizeFilename(email) {
-  return email.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
-}
-
 async function processAccount(account) {
   const { email, password } = account;
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const filename = `${sanitizeFilename(email)}_${timestamp}.png`;
-  const screenshotPath = path.join('evidence', filename);
 
   const browser = await chromium.launch({
     headless: true,
@@ -42,8 +29,6 @@ async function processAccount(account) {
     viewport: { width: 1280, height: 800 },
     locale: 'en-US',
   });
-
-  let voteDetails = {};
 
   try {
     // 1. Login Google first
@@ -75,6 +60,8 @@ async function processAccount(account) {
     
     // Capture all network responses
     let accessToken = null;
+    let voteResponse = null;
+    
     page.on('response', async (response) => {
       const url = response.url();
       if (url.includes('/api/v1/')) {
@@ -91,15 +78,7 @@ async function processAccount(account) {
     await page.goto(sectorUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await page.waitForTimeout(5000);
 
-    // 3. Check what's on the page
-    const pageState = await page.evaluate(() => ({
-      url: location.href,
-      title: document.title,
-      text: document.body?.innerText?.substring(0, 500),
-    }));
-    logger.log(`[${email}] Page: ${pageState.title} — ${pageState.url.substring(0, 80)}`);
-
-    // 4. Wait for GIS to auto-login
+    // 3. Wait for GIS to auto-login
     logger.log(`[${email}] Waiting for GIS...`);
     
     for (let i = 0; i < 30; i++) {
@@ -179,57 +158,51 @@ async function processAccount(account) {
       }
     }
 
-    // 6. Submit vote and capture evidence
+    // 6. Submit vote and capture response
     if (accessToken) {
       logger.log(`[${email}] Submitting vote with accessToken...`);
       
-      // Capture screenshot BEFORE submitting
-      await page.screenshot({ path: screenshotPath, fullPage: true });
-      logger.log(`[${email}] Screenshot saved: ${filename}`);
-
-      // Extract vote details from page
-      voteDetails = await page.evaluate(() => {
-        const text = document.body?.innerText || '';
-        // Try to extract sub-sector and institution from page text
-        const subSectorMatch = text.match(/Sektor[:\s]+([^\n]+)/i);
-        const institutionMatch = text.match(/Institusi[:\s]+([^\n]+)/i);
-        return {
-          subSectorName: subSectorMatch?.[1]?.trim() || null,
-          institutionName: institutionMatch?.[1]?.trim() || null,
-          pageUrl: window.location.href,
-        };
-      });
-
-      // Merge with config data
-      voteDetails = {
-        ...voteDetails,
-        subSectorId: config.vote.subSectorId,
-        institutionId: config.vote.institutionId,
-        selectedFactors: config.vote.selectedFactors,
-        pollSlug: config.vote.pollSlug,
-      };
-
       const result = await submitVote(accessToken);
       
-      if (result.success) {
+      // Parse response to check actual vote status
+      let voteSuccess = false;
+      let voteMessage = '';
+      
+      if (result.responseData) {
+        try {
+          // Response format: "0:{...}\n1:{...}"
+          const lines = result.responseData.split('\n');
+          for (const line of lines) {
+            if (line.startsWith('1:')) {
+              const jsonStr = line.substring(2);
+              const parsed = JSON.parse(jsonStr);
+              voteSuccess = parsed.success === true;
+              voteMessage = parsed.error || parsed.message || JSON.stringify(parsed);
+            }
+          }
+        } catch {
+          voteMessage = result.responseData;
+        }
+      }
+
+      if (result.success && voteSuccess) {
         logger.recordResult(email, 'success', {
-          message: 'Vote submitted!',
-          screenshot: filename,
-          ...voteDetails,
+          message: voteMessage || 'Vote submitted!',
+          voteResponse: result.responseData || null,
+          subSectorId: config.vote.subSectorId,
+          institutionId: config.vote.institutionId,
+          selectedFactors: config.vote.selectedFactors,
+          pollSlug: config.vote.pollSlug,
         });
       } else {
         logger.recordResult(email, 'failed', {
-          error: `Vote failed: ${result.error}`,
-          screenshot: filename,
-          ...voteDetails,
+          error: voteMessage || `Vote failed: ${result.error}`,
+          voteResponse: result.responseData || null,
         });
       }
     } else {
-      // Take screenshot for debugging
-      await page.screenshot({ path: screenshotPath, fullPage: true });
       logger.recordResult(email, 'failed', {
         error: 'No accessToken found on sector page',
-        screenshot: filename,
       });
     }
 
@@ -272,15 +245,30 @@ async function submitVote(accessToken) {
       }
     );
 
-    return { success: true, status: response.status };
+    // Parse response data
+    let responseData = null;
+    if (response.data) {
+      try {
+        // Response might be text/x-component format
+        if (typeof response.data === 'string') {
+          responseData = response.data;
+        } else {
+          responseData = response.data;
+        }
+      } catch {}
+    }
+
+    return { success: true, status: response.status, responseData };
   } catch (error) {
-    return { success: false, error: error.message };
+    return { success: false, error: error.message, responseData: error.response?.data };
   }
 }
 
 async function main() {
-  logger.log('Starting CX100 Stress Test with Evidence');
+  logger.log('Starting CX100 Stress Test');
   logger.log(`Target: ${config.vote.pollSlug}`);
+  logger.log(`Sector: ${config.vote.subSectorId}`);
+  logger.log(`Institution: ${config.vote.institutionId}`);
   logger.log(`Accounts: ${accounts.length}`);
   logger.log('');
   
@@ -300,10 +288,6 @@ async function main() {
   logger.log('Generating report...');
   const reportPath = report.generateReport(output.results, config);
   logger.log(`Report saved to: ${reportPath}`);
-  
-  // List evidence files
-  const evidenceFiles = fs.readdirSync('evidence').filter(f => f.endsWith('.png'));
-  logger.log(`Evidence screenshots: ${evidenceFiles.length}`);
 }
 
 main().catch(e => {
