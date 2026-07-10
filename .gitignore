@@ -6,3 +6,5 @@ evidence/
 .DS_Store
 ss-template/
 .venv/
+config.json
+accounts.json
