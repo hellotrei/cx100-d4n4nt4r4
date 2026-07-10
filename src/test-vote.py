@@ -99,6 +99,19 @@ def process_account(acc):
     
     driver = uc.Chrome(headless=False, use_subprocess=True)
     try:
+        # Dismiss Chrome profile setup / welcome popups
+        time.sleep(3)
+        driver.execute_script('''
+            // Close Chrome profile picker / "Use this account" popups
+            var buttons = document.querySelectorAll('button');
+            buttons.forEach(b => {
+                var text = (b.textContent || '').toLowerCase();
+                if (text.includes('no thanks') || text.includes('skip') || text.includes('dismiss') || text.includes('cancel')) {
+                    b.click();
+                }
+            });
+        ''')
+        
         # 1. Login Google
         driver.get('https://accounts.google.com/signin')
         time.sleep(2)
@@ -118,10 +131,10 @@ def process_account(acc):
         driver.get(f'{CONFIG["voting"]["baseUrl"]}{CONFIG["voting"]["pollPath"]}?ref={CONFIG["vote"]["ref"]}&state=landing')
         time.sleep(3)
         
-        # 3. Fill email
+        # 3. Fill email — use IMAP email so OTP arrives in our inbox
         email_input = driver.find_element(By.CSS_SELECTOR, 'input[type="email"]')
         email_input.clear()
-        email_input.send_keys(email_addr)
+        email_input.send_keys(IMAP_USER)
         driver.execute_script('document.querySelector("input[type=checkbox]").click()')
         time.sleep(1)
         
@@ -249,22 +262,29 @@ def process_account(acc):
             
             # Click vote button
             time.sleep(2)
-            driver.execute_script('''
-                var buttons = document.querySelectorAll('button');
-                for (var i = buttons.length - 1; i >= 0; i--) {
-                    var t = (buttons[i].textContent || '').toLowerCase();
-                    if (t.includes('kirim') || t.includes('submit') || t.includes('vote') || t.includes('selesai')) {
-                        buttons[i].disabled = false; buttons[i].click(); return;
+            try:
+                driver.execute_script('''
+                    var buttons = document.querySelectorAll('button');
+                    for (var i = buttons.length - 1; i >= 0; i--) {
+                        var t = (buttons[i].textContent || '').toLowerCase();
+                        if (t.includes('kirim') || t.includes('submit') || t.includes('vote') || t.includes('selesai')) {
+                            buttons[i].disabled = false; buttons[i].click(); return;
+                        }
                     }
-                }
-            ''')
-            time.sleep(5)
+                ''')
+                time.sleep(5)
+            except:
+                log(f'  Vote button click failed (window closed)')
         
-        # 9. Screenshot evidence
+        # 9. Screenshot evidence (even if vote uncertain)
         evidence_dir = make_evidence_dir()
-        screenshot_evidence(driver, email_addr, evidence_dir)
-        log(f'  ✅ Done')
-        return True
+        try:
+            screenshot_evidence(driver, email_addr, evidence_dir)
+            log(f'  ✅ Done')
+            return True
+        except:
+            log(f'  ❌ Screenshot failed')
+            return False
         
     except Exception as e:
         log(f'  ❌ {str(e)[:100]}')
