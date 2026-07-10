@@ -162,6 +162,7 @@ def process_account(acc):
     if chrome_user_data:
         chrome_opts = uc.ChromeOptions()
         chrome_opts.add_argument(f'--user-data-dir={chrome_user_data}')
+        chrome_opts.add_argument('--disable-extensions')
         driver = uc.Chrome(options=chrome_opts, headless=False, use_subprocess=True)
     else:
         driver = uc.Chrome(headless=False, use_subprocess=True)
@@ -172,69 +173,7 @@ def process_account(acc):
         driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {'source': r'''
             window.__capturedRequests = [];
             window.__jwt = null;
-            var _origFetch = window.fetch;
-            window.fetch = function() {
-                var url = arguments[0];
-                var init = arguments[1] || {};
-                var method = (init.method || 'GET').toUpperCase();
-                var body = init.body || null;
-                // Debug: log body type
-                if (body && !window.__jwt) {
-                    var bodyType = typeof body;
-                    var bodyFull = '';
-                    try { bodyFull = String(body); } catch(e) { bodyFull = '[error]'; }
-                    var bodyPreview = bodyFull.substring(0, 200);
-                    // Simpan debug info
-                    if (!window.__bodyDebug) window.__bodyDebug = [];
-                    window.__bodyDebug.push({ type: bodyType, preview: bodyPreview, url: String(url).substring(0, 80) });
-                    // Scan FULL body untuk JWT (jangan truncate!)
-                    if (bodyType === 'string') {
-                        var jwtMatch = bodyFull.match(/eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+/);
-                        if (jwtMatch && !window.__jwt) {
-                            window.__jwt = jwtMatch[0];
-                            if (!window.__jwtDebug) window.__jwtDebug = [];
-                            window.__jwtDebug.push({ source: 'body', len: jwtMatch[0].length, preview: jwtMatch[0].substring(0, 100) });
-                        }
-                        // Also try: search for eyJ and extract manually
-                        if (!window.__jwt && bodyFull.indexOf('eyJ') !== -1) {
-                            var idx = bodyFull.indexOf('eyJ');
-                            var chunk = bodyFull.substring(idx, idx + 600);
-                            // Find the end: look for closing quote or bracket
-                            var endIdx = chunk.indexOf('"');
-                            if (endIdx === -1) endIdx = chunk.indexOf(']');
-                            if (endIdx === -1) endIdx = chunk.length;
-                            var candidate = chunk.substring(0, endIdx);
-                            // Check if it has dots (JWT format)
-                            var dotCount = (candidate.match(/\./g) || []).length;
-                            if (dotCount >= 2) {
-                                window.__jwt = candidate;
-                                if (!window.__jwtDebug) window.__jwtDebug = [];
-                                window.__jwtDebug.push({ source: 'manual', len: candidate.length, preview: candidate.substring(0, 100), dots: dotCount });
-                            } else {
-                                if (!window.__jwtDebug) window.__jwtDebug = [];
-                                window.__jwtDebug.push({ source: 'manual-fail', len: candidate.length, preview: candidate.substring(0, 100), dots: dotCount });
-                            }
-                        }
-                    }
-                }
-                return _origFetch.apply(this, arguments).then(function(response) {
-                    var clone = response.clone();
-                    clone.text().then(function(text) {
-                        window.__capturedRequests.push({
-                            url: typeof url === 'string' ? url : (url && url.url) || '',
-                            method: method,
-                            body: body ? String(body).substring(0, 500) : null,
-                            status: response.status,
-                            responseText: text.substring(0, 2000),
-                            ts: Date.now()
-                        });
-                        // Scan response juga (fallback)
-                        var jwtMatch2 = text.match(/eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+/);
-                        if (jwtMatch2 && !window.__jwt) window.__jwt = jwtMatch2[0];
-                    });
-                    return response;
-                });
-            };
+            // === XHR hook ONLY — jangan wrap fetch, biar Next.js handle response sendiri ===
             var _xhrOpen = XMLHttpRequest.prototype.open;
             var _xhrSend = XMLHttpRequest.prototype.send;
             XMLHttpRequest.prototype.open = function(m, u) {
@@ -243,27 +182,37 @@ def process_account(acc):
             };
             XMLHttpRequest.prototype.send = function(body) {
                 var self = this;
-                // Scan request body untuk JWT
                 if (body) {
                     var bodyStr = String(body);
+                    // Scan request body untuk JWT
                     var jwtMatch = bodyStr.match(/eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+/);
                     if (jwtMatch && !window.__jwt) window.__jwt = jwtMatch[0];
+                    // Push captured request
+                    window.__capturedRequests.push({
+                        url: self._url, method: self._method,
+                        body: bodyStr.substring(0, 500), ts: Date.now()
+                    });
                 }
-                this.addEventListener('load', function() {
-                    try {
-                        window.__capturedRequests.push({
-                            url: self._url, method: self._method,
-                            body: body ? String(body).substring(0, 500) : null,
-                            status: self.status,
-                            responseText: (self.responseText || '').substring(0, 2000),
-                            ts: Date.now()
-                        });
-                        var text = self.responseText || '';
-                        var jwtMatch = text.match(/eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+/);
-                        if (jwtMatch && !window.__jwt) window.__jwt = jwtMatch[0];
-                    } catch(e) {}
-                });
                 return _xhrSend.apply(this, arguments);
+            };
+            // === Fetch scan TANPA wrap — monkey-patch setelah original resolve ===
+            // Intercept via Proxy (lebih aman, ga ganggu return value)
+            var _origFetch = window.fetch;
+            window.fetch = function() {
+                var args = arguments;
+                var url = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url) || '';
+                var init = args[1] || {};
+                var body = init.body || null;
+                // Scan request body untuk JWT
+                if (body && !window.__jwt) {
+                    try {
+                        var bodyStr = String(body);
+                        var jwtMatch = bodyStr.match(/eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+/);
+                        if (jwtMatch) window.__jwt = jwtMatch[0];
+                    } catch(e) {}
+                }
+                // Langsung return original — jangan wrap response
+                return _origFetch.apply(window, args);
             };
         '''})
 
@@ -282,32 +231,107 @@ def process_account(acc):
             return False
         log(f'  Login OK')
 
-        # === PHASE 2: Open poll, fill email, Turnstile, submit ===
+        # === PHASE 2: Open poll ===
         driver.get(f'{CONFIG["voting"]["baseUrl"]}{CONFIG["voting"]["pollPath"]}?ref={CONFIG["vote"]["ref"]}&state=landing')
         time.sleep(3)
 
+        # Bersihin SEMUA cookies + storage supaya treat sebagai user baru
+        driver.delete_all_cookies()
+        driver.execute_script('sessionStorage.clear(); localStorage.clear();')
+        driver.get(f'{CONFIG["voting"]["baseUrl"]}{CONFIG["voting"]["pollPath"]}?ref={CONFIG["vote"]["ref"]}&state=landing')
+        time.sleep(3)
+
+        # === STEP 1: Email input form ===
         email_input = driver.find_element(By.CSS_SELECTOR, 'input[type="email"]')
         email_input.clear()
         email_input.send_keys(poll_email)
         driver.execute_script('document.querySelector("input[type=checkbox]").click()')
         time.sleep(1)
 
-        # Wait Turnstile
+        # Turnstile — tunggu max 30 detik, log progress
         for i in range(15):
             time.sleep(2)
             r = driver.execute_script('return document.querySelector("[name=cf-turnstile-response]")?.value || "empty"')
             if r != 'empty':
                 log(f'  Turnstile OK')
                 break
+            if i % 3 == 0:
+                log(f'  Turnstile waiting... ({i*2}s)')
+        else:
+            log(f'  Turnstile timeout — continuing anyway')
 
         # Submit email form (trigger OTP)
-        driver.execute_script('var b=document.querySelector("button"); if(b){b.disabled=false;b.click()}')
-        time.sleep(5)
+        submit_result = driver.execute_script('''
+            var buttons = document.querySelectorAll('button');
+            for (var i = 0; i < buttons.length; i++) {
+                var t = (buttons[i].textContent || '').trim().toLowerCase();
+                if (t.includes('kirim') || t.includes('lanjut') || t.includes('submit') || t.includes('verifikasi') || t.includes('masukkan kode')) {
+                    buttons[i].disabled = false; buttons[i].click();
+                    return 'clicked: [' + i + '] ' + t;
+                }
+            }
+            // Fallback: button pertama yang bukan disabled
+            for (var i = 0; i < buttons.length; i++) {
+                if (!buttons[i].disabled && buttons[i].offsetParent !== null) {
+                    buttons[i].disabled = false; buttons[i].click();
+                    return 'fallback: [' + i + '] ' + (buttons[i].textContent || '').trim().substring(0, 50);
+                }
+            }
+            return 'no button found';
+        ''')
+        log(f'  Submit button: {submit_result}')
+        time.sleep(8)  # Tunggu page transition lebih lama
+
+        # === STEP 2: Handle consent/T&C page (muncul SETELAH email submit) ===
+        text = driver.find_element(By.TAG_NAME, 'body').text
+        log(f'  After email submit: {text[:150]}...')
+        if 'Langkah 1' in text or 'Kebijakan' in text or 'Syarat' in text:
+            log(f'  Consent page detected, accepting T&C...')
+            driver.execute_script('window.scrollTo(0, document.body.scrollHeight)')
+            time.sleep(1)
+            driver.execute_script('''
+                var cbs = document.querySelectorAll('input[type="checkbox"]');
+                for (var i = 0; i < cbs.length; i++) { if (!cbs[i].checked) cbs[i].click(); }
+            ''')
+            time.sleep(1)
+            consent_result = driver.execute_script('''
+                var btns = document.querySelectorAll('button');
+                for (var i = 0; i < btns.length; i++) {
+                    var t = (btns[i].textContent || '').trim().toLowerCase();
+                    if (t.includes('setuju') || t.includes('selanjutnya') || t.includes('lanjut')) {
+                        btns[i].disabled = false; btns[i].click(); return 'clicked: ' + t;
+                    }
+                }
+                return 'no consent button found';
+            ''')
+            log(f'  Consent: {consent_result}')
+            time.sleep(5)
+            text = driver.find_element(By.TAG_NAME, 'body').text
+            log(f'  After consent: {text[:150]}...')
 
         # === PHASE 3: OTP verification ===
-        # Selalu coba get OTP setelah email submit (ga tergantung text detection)
         text = driver.find_element(By.TAG_NAME, 'body').text
-        log(f'  Page text preview: {text[:120]}...')
+        log(f'  Page text: {text[:200]}')
+
+        # Cek apakah sudah di OTP page
+        is_otp_page = 'kode' in text.lower() or 'otp' in text.lower() or 'inbox' in text.lower() or 'masukkan' in text.lower()
+        is_email_page = ('langkah 1' in text.lower() or 'kebijakan' in text.lower()) and not is_otp_page
+
+        if is_email_page:
+            log(f'  Still on email page, retrying submit...')
+            driver.execute_script('''
+                var buttons = document.querySelectorAll('button');
+                for (var i = 0; i < buttons.length; i++) {
+                    var t = (buttons[i].textContent || '').toLowerCase();
+                    if (t.includes('kirim') || t.includes('lanjut') || t.includes('submit') || t.includes('verif')) {
+                        buttons[i].disabled = false; buttons[i].click(); return 'clicked: ' + t;
+                    }
+                }
+                return 'no button found';
+            ''')
+            time.sleep(10)
+            text = driver.find_element(By.TAG_NAME, 'body').text
+            log(f'  Page text after retry: {text[:200]}')
 
         # Coba klik "masukkan kode" / "kirim kode" button kalau ada
         driver.execute_script('''
@@ -321,8 +345,8 @@ def process_account(acc):
         ''')
         time.sleep(3)
 
-        # Coba get OTP dari IMAP
-        otp = get_otp(im_user=base_email, im_pass=password, timeout=45)
+        # Coba get OTP dari IMAP (timeout 90 detik — email mungkin delay)
+        otp = get_otp(im_user=base_email, im_pass=password, timeout=90)
         if otp:
             log(f'  OTP: {otp}')
             # Cari input field untuk OTP
@@ -372,8 +396,7 @@ def process_account(acc):
                 url = (req.get('url', '') or '')[:80]
                 status = req.get('status', '?')
                 body_preview = (req.get('body') or '')[:60]
-                resp_preview = (req.get('responseText') or '')[:80]
-                log(f'    {method} {url} → {status} body={body_preview} resp={resp_preview}')
+                log(f'    {method} {url} → {status} body={body_preview}')
 
             log(f'  ⚠️ JWT still not found after scanning {len(captured)} requests')
 
