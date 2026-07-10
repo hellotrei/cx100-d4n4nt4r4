@@ -3,3 +3,6 @@ logs/
 evidence/
 .env
 *.log
+.DS_Store
+ss-template/
+.venv/
