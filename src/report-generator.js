@@ -14,6 +14,7 @@ export class ReportGenerator {
       email: r.email,
       status: r.status,
       timestamp: r.timestamp,
+      screenshot: r.screenshot || null,
       details: r.details || {},
     }));
 
@@ -63,43 +64,60 @@ export class ReportGenerator {
     .stat-card.total .value { color: #3b82f6; }
     .stat-card.time .value { color: #f59e0b; font-size: 18px; }
     
-    .config-info {
-      background: #1a1a1a; border-radius: 10px; padding: 20px;
-      margin-bottom: 30px; border: 1px solid #333;
-    }
-    .config-info h3 { margin-bottom: 15px; color: #3b82f6; }
-    .config-row { display: flex; margin-bottom: 10px; }
-    .config-label { color: #888; min-width: 120px; }
-    .config-value { color: #fff; font-family: monospace; }
-    
     .section-title {
       font-size: 20px; margin: 30px 0 15px; padding-bottom: 10px;
       border-bottom: 1px solid #333;
     }
     
-    .vote-table {
-      width: 100%; border-collapse: collapse; margin-bottom: 30px;
+    .vote-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+      gap: 20px;
     }
-    .vote-table th, .vote-table td {
-      padding: 12px 16px; text-align: left; border-bottom: 1px solid #333;
+    
+    .vote-card {
+      background: #1a1a1a; border-radius: 10px; overflow: hidden;
+      border: 1px solid #333; transition: transform 0.2s;
     }
-    .vote-table th {
-      background: #1a1a1a; color: #888; font-size: 12px; text-transform: uppercase;
-      position: sticky; top: 0;
+    .vote-card:hover { transform: translateY(-2px); }
+    .vote-card.success { border-color: #22c55e; }
+    .vote-card.failed { border-color: #ef4444; }
+    
+    .vote-card .screenshot {
+      width: 100%; height: 200px; object-fit: cover; object-position: top;
+      border-bottom: 1px solid #333; cursor: pointer;
     }
-    .vote-table tr:hover { background: #1a1a1a; }
-    .vote-table .status-badge {
+    
+    .vote-card .info {
+      padding: 16px;
+    }
+    .vote-card .email {
+      font-weight: 600; font-size: 14px; margin-bottom: 8px;
+      word-break: break-all;
+    }
+    .vote-card .meta {
+      display: flex; gap: 12px; font-size: 12px; color: #888;
+    }
+    .vote-card .meta span { display: flex; align-items: center; gap: 4px; }
+    .vote-card .status-badge {
       display: inline-block; padding: 4px 10px; border-radius: 20px;
-      font-size: 11px; font-weight: 600;
+      font-size: 11px; font-weight: 600; margin-top: 8px;
     }
-    .vote-table .success .status-badge { background: #22c55e22; color: #22c55e; }
-    .vote-table .failed .status-badge { background: #ef444422; color: #ef4444; }
-    .vote-table .email { font-weight: 500; word-break: break-all; }
-    .vote-table .response { 
-      max-width: 300px; overflow: hidden; text-overflow: ellipsis; 
-      white-space: nowrap; color: #888; font-size: 13px;
+    .vote-card.success .status-badge { background: #22c55e22; color: #22c55e; }
+    .vote-card.failed .status-badge { background: #ef444422; color: #ef4444; }
+    
+    .details { font-size: 12px; color: #666; margin-top: 8px; }
+    .details dt { color: #888; }
+    .details dd { margin-left: 0; margin-bottom: 4px; }
+    
+    .modal {
+      display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(0,0,0,0.95); z-index: 1000; cursor: pointer;
+      justify-content: center; align-items: center;
     }
-    .vote-table .response:hover { white-space: normal; }
+    .modal.active { display: flex; }
+    .modal img {
+      max-width: 90%; max-height: 90%; object-fit: contain; border-radius: 8px;
+    }
     
     .footer {
       text-align: center; padding: 30px; color: #666; font-size: 12px;
@@ -108,8 +126,7 @@ export class ReportGenerator {
     
     @media (max-width: 768px) {
       .stats { grid-template-columns: repeat(2, 1fr); }
-      .vote-table { font-size: 12px; }
-      .vote-table th, .vote-table td { padding: 8px; }
+      .vote-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -138,75 +155,65 @@ export class ReportGenerator {
     </div>
   </div>
 
-  <div class="config-info">
-    <h3>📋 Konfigurasi Voting</h3>
-    <div class="config-row">
-      <span class="config-label">Sektor</span>
-      <span class="config-value">${config.vote?.subSectorId || '-'}</span>
-    </div>
-    <div class="config-row">
-      <span class="config-label">Institusi</span>
-      <span class="config-value">${config.vote?.institutionId || '-'}</span>
-    </div>
-    <div class="config-row">
-      <span class="config-label">Faktor</span>
-      <span class="config-value">${(config.vote?.selectedFactors || []).join(', ')}</span>
-    </div>
-  </div>
-
   <h2 class="section-title">✅ Berhasil Vote (${successful.length})</h2>
-  <table class="vote-table">
-    <thead>
-      <tr>
-        <th>#</th>
-        <th>Email</th>
-        <th>Timestamp</th>
-        <th>Status</th>
-        <th>Response</th>
-      </tr>
-    </thead>
-    <tbody>
-      ${successful.map((item, idx) => this.buildTableRow(item, idx)).join('\n')}
-    </tbody>
-  </table>
+  <div class="vote-grid">
+    ${successful.map((item, idx) => this.buildVoteCard(item, idx)).join('\n')}
+  </div>
 
   ${failed.length > 0 ? `
   <h2 class="section-title">❌ Gagal (${failed.length})</h2>
-  <table class="vote-table">
-    <thead>
-      <tr>
-        <th>#</th>
-        <th>Email</th>
-        <th>Timestamp</th>
-        <th>Status</th>
-        <th>Error</th>
-      </tr>
-    </thead>
-    <tbody>
-      ${failed.map((item, idx) => this.buildTableRow(item, idx)).join('\n')}
-    </tbody>
-  </table>
+  <div class="vote-grid">
+    ${failed.map((item, idx) => this.buildVoteCard(item, idx)).join('\n')}
+  </div>
   ` : ''}
+
+  <div class="modal" id="modal" onclick="this.classList.remove('active')">
+    <img id="modalImg" src="" alt="Screenshot">
+  </div>
 
   <div class="footer">
     Generated by CX100 Stress Test • ${new Date().toISOString()}
   </div>
+
+  <script>
+    function openModal(src) {
+      document.getElementById('modalImg').src = src;
+      document.getElementById('modal').classList.add('active');
+    }
+  </script>
 </body>
 </html>`;
   }
 
-  buildTableRow(item, idx) {
+  buildVoteCard(item, idx) {
+    const screenshotSrc = item.screenshot || item.details?.screenshot ? `./${item.screenshot || item.details?.screenshot}` : '';
     const time = item.timestamp ? new Date(item.timestamp).toLocaleString('id-ID') : '-';
-    const response = item.details?.voteResponse || item.details?.error || item.details?.message || '-';
-    const truncatedResponse = response.length > 100 ? response.substring(0, 100) + '...' : response;
+    const subSector = item.details?.subSectorName || item.details?.subSectorId || '-';
+    const institution = item.details?.institutionName || item.details?.institutionId || '-';
+    const factors = item.details?.selectedFactors || [];
 
     return `
-    <tr class="${item.status}">
-      <td>${idx + 1}</td>
-      <td class="email">${item.email}</td>
-      <td>${time}</td>
-      <td><span class="status-badge">${item.status === 'success' ? '✅ BERHASIL' : '❌ GAGAL'}</span></td>
-      <td class="response" title="${response}">${truncatedResponse}</td>
-    </tr>`;
+    <div class="vote-card ${item.status}">
+      ${screenshotSrc ? `<img class="screenshot" src="${screenshotSrc}" alt="Vote evidence" onclick="openModal('${screenshotSrc}')" loading="lazy">` : '<div class="screenshot" style="display:flex;align-items:center;justify-content:center;color:#666;">No screenshot</div>'}
+      <div class="info">
+        <div class="email">📧 ${item.email}</div>
+        <div class="meta">
+          <span>🕐 ${time}</span>
+          <span>#${idx + 1}</span>
+        </div>
+        <div class="status-badge">${item.status === 'success' ? '✅ BERHASIL' : '❌ GAGAL'}</div>
+        ${item.status === 'success' ? `
+        <dl class="details">
+          <dt>Sektor</dt><dd>${subSector}</dd>
+          <dt>Institusi</dt><dd>${institution}</dd>
+          <dt>Faktor</dt><dd>${factors.join(', ') || '-'}</dd>
+        </dl>
+        ` : `
+        <dl class="details">
+          <dt>Error</dt><dd>${item.details?.error || '-'}</dd>
+        </dl>
+        `}
+      </div>
+    </div>`;
   }
 }

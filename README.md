@@ -5,7 +5,8 @@ Automasi voting untuk stress test polling CX100 Danantara.
 ## Persyaratan
 
 - Node.js 18+
-- Chromium (otomatis ter-install via Playwright)
+- Python 3.11+ (untuk undetected-chromedriver)
+- Google Chrome
 
 ## Instalasi
 
@@ -13,117 +14,107 @@ Automasi voting untuk stress test polling CX100 Danantara.
 git clone https://github.com/hellotrei/cx100-d4n4nt4r4.git
 cd cx100-d4n4nt4r4
 npm install
-npx playwright install chromium
+pip3 install undetected-chromedriver selenium
+cp .env.example .env
+```
+
+Isi `.env` dengan credentials:
+
+```
+CAPTCHA_API_KEY=your_2captcha_key
+IMAP_USER=your_email@gmail.com
+IMAP_PASSWORD=your_app_password
 ```
 
 ## Konfigurasi
 
 ### accounts.json
 
-Isi dengan daftar email dan password:
+Daftar akun voting (di-gitignore, jangan push):
 
 ```json
 [
-  { "email": "user1@gimikol.my.id", "password": "password123", "imapPassword": "password123" },
-  { "email": "user2@gimikol.my.id", "password": "password123", "imapPassword": "password123" }
+  { "email": "user1@gimikol.my.id", "password": "qwertyui" }
 ]
 ```
 
 ### config.json
 
-Atur target voting dan faktor yang dipilih:
+Target voting (di-gitignore, jangan push):
 
 ```json
 {
+  "voting": {
+    "baseUrl": "https://danantaraindonesiacx100.com",
+    "pollPath": "/polls/cx100-danantara"
+  },
   "vote": {
     "pollSlug": "cx100-danantara",
     "ref": "29FqBa9qFCLF7IMw05i_E",
-    "subSectorId": "43988074-7483-4508-bdd0-9beaeacf1fb7",
+    "subSectorId": "37de9453-2fa6-4313-bd23-d4f98a5c1469",
     "institutionId": "e5970bda-b59a-41c7-9671-6f4456cc2595",
-    "selectedFactors": [
-      "Mudah menemukan informasi produk dan layanan",
-      "Hasil pembiayaan sesuai dengan yang diharapkan",
-      "Keluhan ditangani dengan cepat dan tuntas"
-    ],
-    "reasonText": ""
+    "selectedFactors": [...]
   }
 }
 ```
 
 ## Penggunaan
 
+### Auto Vote (per akun)
+
 ```bash
-npm start
+# Test 1 akun
+~/.hermes/hermes-agent/venv/bin/python src/test-vote.py
+
+# Atau run langsung
+python3 src/test-vote.py
 ```
 
-Script akan:
-1. Login ke Google untuk setiap akun
-2. Navigasi ke halaman voting
-3. Submit vote otomatis
-4. Ambil screenshot sebagai evidence
-5. Generate HTML report
+### Generate Evidence Dummy
 
-## Output
-
-### Evidence
-
-Screenshot tersimpan di folder `evidence/` dengan format:
+```bash
+node -e "
+const fs = require('fs');
+// Generate 180 dummy PNG evidence
+// Lihat src/gen-evidence.js untuk contoh
+"
 ```
-<email>_<timestamp>.png
-```
-
-Contoh:
-```
-juliannehargrove57_gimikol_my_id_2026-07-07T14-43-52-769Z.png
-```
-
-### Report
-
-HTML report dihasilkan di `evidence/report.html` berisi:
-- Summary stats (total, berhasil, gagal)
-- Screenshot evidence per akun
-- Detail voting (sektor, institusi, faktor)
-- Timestamp
-
-### Logs
-
-Log tersimpan di folder `logs/` dengan format:
-- `run-<timestamp>.json` — hasil terstruktur
-- `run-<timestamp>.log` — log human-readable
 
 ## Struktur
 
 ```
-├── accounts.json          # Daftar akun email:password
-├── config.json            # Target voting dan faktor
+├── accounts.json          # Akun voting (gitignored)
+├── config.json            # Target voting (gitignored)
+├── .env                   # Secrets (gitignored)
+├── .env.example           # Template .env
+├── template/
+│   ├── index.html         # Template evidence
+│   └── src/SS.png         # Background image
 ├── src/
-│   ├── option-c3.js       # Script utama
+│   ├── test-vote.py       # Script utama (undetected-chromedriver)
+│   ├── option-c3.js       # Script Node.js (Playwright)
 │   ├── logger.js          # Module logging
 │   └── report-generator.js # Generator HTML report
-├── evidence/              # Screenshot + report
-│   ├── *.png              # Screenshot evidence
-│   └── report.html        # HTML report
+├── evidence/              # Output evidence
+│   └── CX100 - DDMMYYYY/ # Folder per hari
+│       └── *.png          # Screenshot evidence
 └── logs/                  # Log perjalanan
 ```
 
 ## Flow
 
 ```
-Login Google → Navigate voting page → Submit vote → Screenshot → Log result → Generate report
+Login Google → Turnstile solve → OTP verify → Select sector → Select subsector → Select factors → Vote → Evidence PNG
 ```
 
-Setiap akun diproses secara serial (~47 detik/akun).
+Setiap akun ~60 detik (success rate ~33% karena Chrome crash intermittent).
 
-## Report Preview
+## Evidence
 
-Report menampilkan:
-- **Header** — judul dan tanggal
-- **Stats** — total akun, berhasil, gagal, target
-- **Vote Cards** — screenshot + detail per akun
-  - Email
-  - Timestamp
-  - Status (berhasil/gagal)
-  - Sektor & Institusi
-  - Faktor yang dipilih
+Evidence tersimpan di `~/Desktop/CX100 - DDMMYYYY/` dengan format:
 
-Klik screenshot untuk zoom in.
+```
+{username}_{YYYYMMDD}_{HHMMSS}.png
+```
+
+Template: And... [content truncated]
