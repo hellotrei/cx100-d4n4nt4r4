@@ -8,3 +8,4 @@ ss-template/
 .venv/
 config.json
 accounts.json
+package-lock.json

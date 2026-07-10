@@ -6,8 +6,15 @@
     "start": "node src/option-c3.js"
   },
   "dependencies": {
+    "@browserbasehq/sdk": "^2.15.0",
+    "2captcha": "^3.0.5-2",
     "axios": "^1.7.0",
+    "googleapis": "^173.0.0",
+    "imap-simple": "^5.1.0",
+    "mailparser": "^3.9.14",
     "playwright-extra": "^4.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2"
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "selenium-webdriver": "^4.45.0",
+    "undetected-chromedriver": "^0.0.1-security"
   }
 }
