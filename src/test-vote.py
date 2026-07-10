@@ -32,15 +32,46 @@ COMPANY = ENV.get('COMPANY_NAME', 'Galeri 24 Pegadaian')
 TEMPLATE = os.path.join(os.path.dirname(__file__), '..', 'template', 'index.html')
 SS_PNG = os.path.join(os.path.dirname(__file__), '..', 'template', 'src', 'SS.png')
 
+# === DOT VARIATION GENERATOR ===
+# Gmail ignore dots di local part: a.b@c = ab@c = a..b@c
+# Voting site treat tiap kombinasi sebagai akun berbeda.
+# Generate variasi dengan insert dot di posisi berbeda.
+def generate_dot_variations(email, max_count=500):
+    """Generate dot variations dari email. a@b.com → [a@b.com, a.@b.com, ...]"""
+    if '@' not in email:
+        return [email]
+    local, domain = email.split('@', 1)
+    if len(local) < 2:
+        return [email]
+
+    variations = [email]  # Original tanpa dot
+    positions = list(range(1, len(local)))  # Posisi antar karakter
+
+    # Generate kombinasi dengan 1 dot, 2 dots, 3 dots, dst
+    from itertools import combinations
+    for dot_count in range(1, len(positions) + 1):
+        for combo in combinations(positions, dot_count):
+            new_local = list(local)
+            for pos in sorted(combo, reverse=True):
+                new_local.insert(pos, '.')
+            variation = ''.join(new_local) + '@' + domain
+            if variation not in variations:
+                variations.append(variation)
+            if len(variations) >= max_count:
+                return variations[:max_count]
+    return variations[:max_count]
+
 def log(msg):
     print(f'[{datetime.now().strftime("%H:%M:%S")}] {msg}')
 
-def get_otp(timeout=60):
+def get_otp(im_user=None, im_pass=None, timeout=60):
+    im_user = im_user or IMAP_USER
+    im_pass = im_pass or IMAP_PASS
     start = time.time()
     while time.time() - start < timeout:
         try:
             mail = imaplib.IMAP4_SSL('imap.gmail.com', 993)
-            mail.login(IMAP_USER, IMAP_PASS)
+            mail.login(im_user, im_pass)
             mail.select('INBOX')
             _, data = mail.search(None, 'UNSEEN')
             for num in reversed(data[0].split()[-10:]):
@@ -115,14 +146,25 @@ NEXT_ACTION_ID = '709cd13f602d4f2b96ca742284b6a070ccded9e797'
 
 
 def process_account(acc):
-    email_addr = acc['email']
+    base_email = acc['email']  # Gmail asli (untuk login + IMAP)
     password = acc['password']
-    log(f'[{email_addr}]')
+    # Poll email: dot variation dari base_email, atau explicit dari accounts.json
+    poll_email_base = acc.get('poll_email', base_email)
+    variations = generate_dot_variations(poll_email_base, max_count=500)
+    poll_email = variations[acc.get('variation_index', 0) % len(variations)]
+    log(f'[{base_email}] poll_email={poll_email}')
 
     subprocess.run(['pkill', '-f', 'undetected_chromedriver'], capture_output=True)
     time.sleep(1)
 
-    driver = uc.Chrome(headless=False, use_subprocess=True)
+    # Chrome profile: pakai existing profile yang udah login Google
+    chrome_user_data = ENV.get('CHROME_USER_DATA_DIR', '')
+    if chrome_user_data:
+        chrome_opts = uc.ChromeOptions()
+        chrome_opts.add_argument(f'--user-data-dir={chrome_user_data}')
+        driver = uc.Chrome(options=chrome_opts, headless=False, use_subprocess=True)
+    else:
+        driver = uc.Chrome(headless=False, use_subprocess=True)
     try:
         # === CDP hook: install fetch interceptor SEBELUM page load ===
         # Page.addScriptToEvaluateOnNewDocument inject JS sebelum Next.js load,
@@ -228,7 +270,7 @@ def process_account(acc):
         # === PHASE 1: Login Google ===
         driver.get('https://accounts.google.com/signin')
         time.sleep(2)
-        driver.find_element(By.CSS_SELECTOR, '#identifierId').send_keys(email_addr)
+        driver.find_element(By.CSS_SELECTOR, '#identifierId').send_keys(base_email)
         driver.find_element(By.CSS_SELECTOR, '#identifierNext').click()
         time.sleep(3)
         driver.find_element(By.CSS_SELECTOR, 'input[type="password"]').send_keys(password)
@@ -246,7 +288,7 @@ def process_account(acc):
 
         email_input = driver.find_element(By.CSS_SELECTOR, 'input[type="email"]')
         email_input.clear()
-        email_input.send_keys(IMAP_USER)
+        email_input.send_keys(poll_email)
         driver.execute_script('document.querySelector("input[type=checkbox]").click()')
         time.sleep(1)
 
@@ -263,25 +305,27 @@ def process_account(acc):
         time.sleep(5)
 
         # === PHASE 3: OTP verification ===
+        # Selalu coba get OTP setelah email submit (ga tergantung text detection)
         text = driver.find_element(By.TAG_NAME, 'body').text
-        if 'OTP' in text or 'kode' in text.lower() or 'Masukkan' in text:
-            log(f'  OTP page...')
-            driver.execute_script('''
-                var buttons = document.querySelectorAll('button');
-                for (var i = 0; i < buttons.length; i++) {
-                    if ((buttons[i].textContent || '').toLowerCase().includes('masukkan kode')) {
-                        buttons[i].disabled = false; buttons[i].click(); return;
-                    }
+        log(f'  Page text preview: {text[:120]}...')
+
+        # Coba klik "masukkan kode" / "kirim kode" button kalau ada
+        driver.execute_script('''
+            var buttons = document.querySelectorAll('button');
+            for (var i = 0; i < buttons.length; i++) {
+                var t = (buttons[i].textContent || '').toLowerCase();
+                if (t.includes('masukkan kode') || t.includes('kirim kode') || t.includes('verifikasi')) {
+                    buttons[i].disabled = false; buttons[i].click(); return;
                 }
-            ''')
-            time.sleep(5)
+            }
+        ''')
+        time.sleep(3)
 
-            otp = get_otp(timeout=60)
-            if not otp:
-                log(f'  ❌ No OTP')
-                return False
+        # Coba get OTP dari IMAP
+        otp = get_otp(im_user=base_email, im_pass=password, timeout=45)
+        if otp:
             log(f'  OTP: {otp}')
-
+            # Cari input field untuk OTP
             otp_input = None
             for attempt in range(5):
                 for inp in driver.find_elements(By.CSS_SELECTOR, 'input'):
@@ -300,22 +344,9 @@ def process_account(acc):
                 try: otp_input.send_keys(Keys.RETURN)
                 except: pass
             else:
-                log(f'  ❌ No OTP input')
-                return False
-
-            time.sleep(3)
-
-            # Klik "Kirim/Lanjut/Verif" button
-            driver.execute_script('''
-                var buttons = document.querySelectorAll('button');
-                for (var i = 0; i < buttons.length; i++) {
-                    var t = (buttons[i].textContent || '').toLowerCase();
-                    if (t.includes('kirim') || t.includes('lanjut') || t.includes('verif')) {
-                        buttons[i].disabled = false; buttons[i].click(); return;
-                    }
-                }
-            ''')
-            time.sleep(5)
+                log(f'  ❌ No OTP input found')
+        else:
+            log(f'  No OTP received (might be bypassed)')
 
         # === PHASE 4: Ambil JWT dari CDP hook ===
         log(f'  Checking captured requests...')
@@ -495,7 +526,7 @@ def process_account(acc):
         # === PHASE 5: Screenshot evidence ===
         evidence_dir = make_evidence_dir()
         try:
-            screenshot_evidence(driver, email_addr, evidence_dir)
+            screenshot_evidence(driver, base_email, evidence_dir)
             log(f'  ✅ Done (success={success})')
             return True
         except:
