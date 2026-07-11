@@ -6,6 +6,31 @@ from datetime import datetime, timezone, timedelta
 
 WIB = timezone(timedelta(hours=7))
 
+# === OPTIMIZATION: Element polling instead of time.sleep ===
+def wait_for_text(driver, text_match, timeout=3, poll=0.3):
+    """Poll body text sampai mengandung text_match. Return text final."""
+    deadline = time.time() + timeout
+    text = ''
+    while time.time() < deadline:
+        try:
+            text = driver.find_element(By.TAG_NAME, 'body').text
+            if any(m in text.lower() for m in text_match if isinstance(m, str)):
+                return text
+            if isinstance(text_match, list) and any(m in text.lower() for m in text_match):
+                return text
+        except: pass
+        time.sleep(poll)
+    return text
+
+def wait_for_url(driver, pattern, timeout=3, poll=0.3):
+    """Poll URL sampai mengandung pattern."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if pattern.lower() in driver.current_url.lower():
+            return True
+        time.sleep(poll)
+    return False
+
 # Load config
 with open('config.json') as f:
     CONFIG = json.load(f)
@@ -370,20 +395,20 @@ def process_account(acc):
             return 'no button found';
         ''')
         log(f'  Submit button: {submit_result}')
-        time.sleep(8)  # Tunggu page transition lebih lama
+        # Tunggu page transition — poll max 5 detik
+        text = wait_for_text(driver, ['langkah 1', 'kebijakan', 'syarat', 'periksa inbox', 'kode', 'inbox', 'masukkan'], timeout=5)
 
-        # === STEP 2: Handle consent/T&C page (muncul SETELAH email submit) ===
-        text = driver.find_element(By.TAG_NAME, 'body').text
+        # === STEP 2: Handle consent/T&C page ===
         log(f'  After email submit: {text[:150]}...')
         if 'Langkah 1' in text or 'Kebijakan' in text or 'Syarat' in text:
             log(f'  Consent page detected, accepting T&C...')
             driver.execute_script('window.scrollTo(0, document.body.scrollHeight)')
-            time.sleep(1)
+            time.sleep(0.3)
             driver.execute_script('''
                 var cbs = document.querySelectorAll('input[type="checkbox"]');
                 for (var i = 0; i < cbs.length; i++) { if (!cbs[i].checked) cbs[i].click(); }
             ''')
-            time.sleep(1)
+            time.sleep(0.3)
             consent_result = driver.execute_script('''
                 var btns = document.querySelectorAll('button');
                 for (var i = 0; i < btns.length; i++) {
@@ -395,8 +420,7 @@ def process_account(acc):
                 return 'no consent button found';
             ''')
             log(f'  Consent: {consent_result}')
-            time.sleep(5)
-            text = driver.find_element(By.TAG_NAME, 'body').text
+            text = wait_for_text(driver, ['periksa inbox', 'kode', 'inbox', 'masukkan', 'polling sector', 'pilih sektor'], timeout=5)
             log(f'  After consent: {text[:150]}...')
 
         # === PHASE 3: OTP verification ===
@@ -491,26 +515,52 @@ def process_account(acc):
                 if (cards.length > 1) { cards[1].click(); return 'fallback: card[1]'; }
                 return 'no sector found';
             ''')
-            time.sleep(3)
-            text = driver.find_element(By.TAG_NAME, 'body').text
+            time.sleep(0.5)  # Minimal delay untuk page transition
+            text = wait_for_text(driver, ['subsektor', 'pilih sub', 'banking', 'multifinance'], timeout=3)
             log(f'  After sector: {text[:150]}...')
 
         # STEP 2: Pilih subsector
         if 'subsektor' in text.lower() or 'Pilih sub' in text:
             log(f'  Selecting subsector...')
+            # Tunggu element "Multifinance" muncul dulu
+            for _ in range(10):
+                found = driver.execute_script('''
+                    // Cari text "Multifinance" lalu klik PARENT-nya (card container)
+                    var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+                    while (walker.nextNode()) {
+                        if (walker.currentNode.textContent.trim().toLowerCase() === 'multifinance') {
+                            var el = walker.currentNode.parentElement;
+                            // Cari card clickable terdekat
+                            for (var p = el; p && p !== document.body; p = p.parentElement) {
+                                if (p.onclick || p.getAttribute('role') === 'button' ||
+                                    p.classList.toString().includes('cursor') ||
+                                    p.tagName === 'BUTTON' || p.tagName === 'A') {
+                                    p.click(); return 'clicked parent: ' + p.tagName + ' ' + (p.textContent || '').substring(0, 30);
+                                }
+                            }
+                            // Fallback: klik parent langsung
+                            el.parentElement.click(); return 'clicked parentElement: ' + el.parentElement.tagName;
+                        }
+                    }
+                    return 'not found';
+                ''')
+                if 'clicked' in found:
+                    log(f'  → {found}')
+                    break
+                time.sleep(0.3)
+            time.sleep(0.5)
+            # Klik "Lanjut" setelah select subsector
             driver.execute_script('''
-                var items = document.querySelectorAll('button, a, [role="button"], [class*="card"], [class*="Card"], div[class*="cursor"]');
-                for (var i = 0; i < items.length; i++) {
-                    var t = (items[i].textContent || '').toLowerCase();
-                    if (t.includes('gadai') || t.includes('pawn') || t.includes('pegadaian') ||
-                        t.includes('pembiayaan') || t.includes('multiguna') || t.includes('multifinance')) {
-                        items[i].click(); return 'clicked: ' + t.substring(0, 50);
+                var btns = document.querySelectorAll('button');
+                for (var i = btns.length - 1; i >= 0; i--) {
+                    var t = (btns[i].textContent || '').toLowerCase().trim();
+                    if (t === 'lanjut' || t.includes('lanjutkan')) {
+                        btns[i].disabled = false; btns[i].click(); return 'clicked: ' + t;
                     }
                 }
-                return 'no subsector found';
             ''')
-            time.sleep(3)
-            text = driver.find_element(By.TAG_NAME, 'body').text
+            time.sleep(0.5)
+            text = wait_for_text(driver, ['faktor', 'unggul', 'nilai', 'perusahaan', 'logo'], timeout=3)
             log(f'  After subsector: {text[:150]}...')
 
         # STEP 3: Pilih factors
@@ -538,10 +588,10 @@ def process_account(acc):
                     return 'not found: {search}';
                 ''')
                 log(f'    → {clicked}')
-                time.sleep(1)
-            time.sleep(2)
+                time.sleep(0.3)
+            time.sleep(0.5)
             driver.execute_script('window.scrollTo(0, document.body.scrollHeight)')
-            time.sleep(1)
+            time.sleep(0.3)
 
         # STEP 4: Submit / Lanjut — loop multi-step
         for submit_attempt in range(5):
@@ -595,7 +645,7 @@ def process_account(acc):
             log(f'  → {submit_result}')
             if 'none' in submit_result:
                 break
-            time.sleep(5)
+            text = wait_for_text(driver, ['berhasil', 'success', 'terima kasih', 'perusahaan', 'logo', 'klik', 'faktor', 'unggul'], timeout=2)
         # Cek hasil final
         if not success:
             text = driver.find_element(By.TAG_NAME, 'body').text

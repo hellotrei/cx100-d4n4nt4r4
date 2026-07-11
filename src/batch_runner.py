@@ -81,5 +81,10 @@ def main():
 
     print(f'\n=== BATCH DONE: {success}/{batch_size} success, {failed} failed ===')
 
+    # Update variation_index ke angka berikutnya supaya batch berikutnya mulai dari index baru
+    acc['variation_index'] = start_index + batch_size
+    save_accounts(accounts)
+    print(f'Next variation_index: {acc["variation_index"]}')
+
 if __name__ == '__main__':
     main()
