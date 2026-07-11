@@ -607,7 +607,7 @@ def process_account(acc):
         # === PHASE 5: Screenshot evidence ===
         evidence_dir = make_evidence_dir()
         try:
-            screenshot_evidence(driver, base_email, evidence_dir)
+            screenshot_evidence(driver, poll_email, evidence_dir)
             log(f'  ✅ Done (success={success})')
             return True
         except:
