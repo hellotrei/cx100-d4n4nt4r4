@@ -32,6 +32,11 @@ COMPANY = ENV.get('COMPANY_NAME', 'Galeri 24 Pegadaian')
 TEMPLATE = os.path.join(os.path.dirname(__file__), '..', 'template', 'index.html')
 SS_PNG = os.path.join(os.path.dirname(__file__), '..', 'template', 'src', 'SS.png')
 
+# === TOTP (Google Authenticator) ===
+import pyotp
+TOTP_SECRET = ENV.get('TOTP_SECRET', '')
+totp = pyotp.TOTP(TOTP_SECRET) if TOTP_SECRET else None
+
 # === DOT VARIATION GENERATOR ===
 # Gmail ignore dots di local part: a.b@c = ab@c = a..b@c
 # Voting site treat tiap kombinasi sebagai akun berbeda.
@@ -64,7 +69,7 @@ def generate_dot_variations(email, max_count=500):
 def log(msg):
     print(f'[{datetime.now().strftime("%H:%M:%S")}] {msg}')
 
-def get_otp(im_user=None, im_pass=None, timeout=60):
+def get_otp(im_user=None, im_pass=None, timeout=90):
     im_user = im_user or IMAP_USER
     im_pass = im_pass or IMAP_PASS
     start = time.time()
@@ -73,11 +78,23 @@ def get_otp(im_user=None, im_pass=None, timeout=60):
             mail = imaplib.IMAP4_SSL('imap.gmail.com', 993)
             mail.login(im_user, im_pass)
             mail.select('INBOX')
-            _, data = mail.search(None, 'UNSEEN')
+            # Search ALL emails (bukan cuma UNSEEN — Gmail bisa auto-read)
+            _, data = mail.search(None, 'ALL')
+            now = time.time()
             for num in reversed(data[0].split()[-10:]):
                 _, msg_data = mail.fetch(num, '(RFC822)')
                 msg = email_module.message_from_bytes(msg_data[0][1])
                 subj = msg.get('subject', '')
+                date_str = msg.get('date', '')
+                # Parse email date
+                try:
+                    from email.utils import parsedate_to_datetime
+                    email_date = parsedate_to_datetime(date_str)
+                    email_age = now - email_date.timestamp()
+                    if email_age > 600:  # Skip emails older than 10 minutes
+                        continue
+                except:
+                    pass
                 if any(w in subj.lower() for w in ['polling', 'danantara', 'cx100', 'verifikasi', 'otp']):
                     body = ''
                     if msg.is_multipart():
@@ -219,17 +236,89 @@ def process_account(acc):
         # === PHASE 1: Login Google ===
         driver.get('https://accounts.google.com/signin')
         time.sleep(2)
-        driver.find_element(By.CSS_SELECTOR, '#identifierId').send_keys(base_email)
-        driver.find_element(By.CSS_SELECTOR, '#identifierNext').click()
-        time.sleep(3)
-        driver.find_element(By.CSS_SELECTOR, 'input[type="password"]').send_keys(password)
-        driver.find_element(By.CSS_SELECTOR, '#passwordNext').click()
-        time.sleep(5)
 
-        if 'challenge' in driver.current_url or 'signin' in driver.current_url:
-            log(f'  ❌ Google login failed')
-            return False
-        log(f'  Login OK')
+        # Cek apakah sudah login (redirect ke Google)
+        if 'accounts.google.com' not in driver.current_url or 'signin' not in driver.current_url:
+            log(f'  Already logged in')
+        else:
+            # Belum login — coba auto-login
+            try:
+                driver.find_element(By.CSS_SELECTOR, '#identifierId').send_keys(base_email)
+                driver.find_element(By.CSS_SELECTOR, '#identifierNext').click()
+                time.sleep(3)
+                driver.find_element(By.CSS_SELECTOR, 'input[type="password"]').send_keys(password)
+                driver.find_element(By.CSS_SELECTOR, '#passwordNext').click()
+                time.sleep(5)
+            except:
+                pass
+
+            # Cek apakah butuh 2FA / manual intervention
+            if 'challenge' in driver.current_url or 'signin' in driver.current_url:
+                # Coba auto-complete 2FA pakai TOTP
+                if totp:
+                    log(f'  2FA detected — generating TOTP code...')
+                    time.sleep(3)
+                    # Cari input untuk TOTP code
+                    totp_code = totp.now()
+                    log(f'  TOTP: {totp_code}')
+                    # Coba masukkan code ke input field
+                    for attempt in range(5):
+                        try:
+                            inputs = driver.find_elements(By.CSS_SELECTOR, 'input[type="text"], input[type="tel"], input[type="number"]')
+                            for inp in inputs:
+                                if inp.is_displayed():
+                                    inp.clear()
+                                    inp.send_keys(totp_code)
+                                    time.sleep(1)
+                                    # Klik submit/next
+                                    driver.execute_script('''
+                                        var btns = document.querySelectorAll('button');
+                                        for (var i = 0; i < btns.length; i++) {
+                                            var t = (btns[i].textContent || '').toLowerCase();
+                                            if (t.includes('next') || t.includes('submit') || t.includes('verif') || t.includes('lanjut')) {
+                                                btns[i].click(); return;
+                                            }
+                                        }
+                                    ''')
+                                    log(f'  TOTP submitted')
+                                    break
+                            break
+                        except:
+                            time.sleep(2)
+                    time.sleep(5)
+                    # Re-check
+                    if 'challenge' not in driver.current_url and 'signin' not in driver.current_url:
+                        log(f'  Login OK (TOTP)')
+                    else:
+                        log(f'  ⚠️ TOTP failed — need manual login')
+                        # Fallback: manual wait
+                        for i in range(60):
+                            time.sleep(2)
+                            current = driver.current_url
+                            if 'challenge' not in current and 'signin' not in current:
+                                log(f'  Login OK (manual)')
+                                break
+                            if i % 5 == 0:
+                                log(f'  Waiting for login... ({i*2}s)')
+                        else:
+                            log(f'  ❌ Login timeout')
+                            return False
+                else:
+                    log(f'  ⚠️ Need manual login/2FA — complete in Chrome window')
+                    # Manual wait max 120 detik
+                    for i in range(60):
+                        time.sleep(2)
+                        current = driver.current_url
+                        if 'challenge' not in current and 'signin' not in current:
+                            log(f'  Login OK (manual)')
+                            break
+                        if i % 5 == 0:
+                            log(f'  Waiting for login... ({i*2}s)')
+                    else:
+                        log(f'  ❌ Login timeout')
+                        return False
+            else:
+                log(f'  Login OK')
 
         # === PHASE 2: Open poll ===
         driver.get(f'{CONFIG["voting"]["baseUrl"]}{CONFIG["voting"]["pollPath"]}?ref={CONFIG["vote"]["ref"]}&state=landing')
@@ -346,7 +435,7 @@ def process_account(acc):
         time.sleep(3)
 
         # Coba get OTP dari IMAP (timeout 90 detik — email mungkin delay)
-        otp = get_otp(im_user=base_email, im_pass=password, timeout=90)
+        otp = get_otp(im_user=IMAP_USER, im_pass=IMAP_PASS, timeout=90)
         if otp:
             log(f'  OTP: {otp}')
             # Cari input field untuk OTP
@@ -367,184 +456,152 @@ def process_account(acc):
                 time.sleep(2)
                 try: otp_input.send_keys(Keys.RETURN)
                 except: pass
+                # Tunggu page transition setelah OTP submit
+                log(f'  Waiting for OTP verification...')
+                time.sleep(10)
+                # Cek page text setelah OTP
+                try:
+                    text_after = driver.find_element(By.TAG_NAME, 'body').text
+                    log(f'  After OTP: {text_after[:200]}...')
+                except: pass
             else:
                 log(f'  ❌ No OTP input found')
         else:
             log(f'  No OTP received (might be bypassed)')
 
-        # === PHASE 4: Ambil JWT dari CDP hook ===
-        log(f'  Checking captured requests...')
+        # === PHASE 4: UI flow — pilih sektor → subsector → factors → submit ===
+        success = False
+        text = driver.find_element(By.TAG_NAME, 'body').text
+        log(f'  Page: {text[:150]}...')
 
-        jwt = driver.execute_script('return window.__jwt')
-        captured = driver.execute_script('return window.__capturedRequests || []')
-        body_debug = driver.execute_script('return window.__bodyDebug || []')
-        jwt_debug = driver.execute_script('return window.__jwtDebug || []')
-        log(f'  Captured requests: {len(captured)}')
-        log(f'  Body debug entries: {len(body_debug)}')
-        for bd in body_debug:
-            log(f'    type={bd.get("type")} url={bd.get("url", "")[:60]} preview={bd.get("preview", "")[:100]}')
-        log(f'  JWT debug entries: {len(jwt_debug)}')
-        for jd in jwt_debug:
-            log(f'    source={jd.get("source")} len={jd.get("len")} dots={jd.get("dots")} preview={jd.get("preview", "")[:100]}')
-
-        if jwt:
-            log(f'  ✅ JWT found from CDP hook (len={len(jwt)})')
-        else:
-            # Log semua captured requests
-            for req in captured:
-                method = req.get('method', '?')
-                url = (req.get('url', '') or '')[:80]
-                status = req.get('status', '?')
-                body_preview = (req.get('body') or '')[:60]
-                log(f'    {method} {url} → {status} body={body_preview}')
-
-            log(f'  ⚠️ JWT still not found after scanning {len(captured)} requests')
-
-        if jwt:
-            log(f'  ✅ JWT found (len={len(jwt)})')
-        else:
-            log(f'  ⚠️ JWT not found in storage, dumping keys...')
-            # Debug: dump storage keys
-            keys = driver.execute_script('''
-                var result = [];
-                for (var i = 0; i < localStorage.length; i++) {
-                    var k = localStorage.key(i);
-                    var v = localStorage.getItem(k);
-                    result.push(k + ': ' + (v ? v.substring(0, 80) : 'null'));
-                }
-                for (var i = 0; i < sessionStorage.length; i++) {
-                    var k = sessionStorage.key(i);
-                    var v = sessionStorage.getItem(k);
-                    result.push('session:' + k + ': ' + (v ? v.substring(0, 80) : 'null'));
-                }
-                return result;
-            ''')
-            for k in keys:
-                log(f'    {k}')
-
-        # Build submit payload dari config.json + .env
-        sector_id = ENV.get('SECTOR_ID', '')
-        api_payload = {
-            'subSectorId': CONFIG['vote']['subSectorId'],
-            'institutionId': CONFIG['vote']['institutionId'],
-            'selectedFactors': CONFIG['vote']['selectedFactors'],
-            'pollSlug': CONFIG['vote']['pollSlug'],
-            'sectorId': sector_id,
-        }
-
-        # Panggil fetch dari browser context
-        rsc_tree = '%5B%22%22%2C%7B%22children%22%3A%5B%22polls%22%2C%7B%22children%22%3A%5B%5B%22slug%22%2C%22cx100-danantara%22%2C%22d%22%2Cnull%5D%2C%7B%22children%22%3A%5B%22__PAGE__%22%2C%7B%7D%2Cnull%2Cnull%2C0%5D%7D%2Cnull%2Cnull%2C0%5D%7D%2Cnull%2Cnull%2C0%5D%7D%2Cnull%2Cnull%2C16%5D'
-        submit_js = r'''
-        async function submitVote(jwt, payload, ref, rscTree) {
-            var url = window.location.origin + '/polls/' + payload.pollSlug
-                + '?ref=' + ref + '&state=sector-' + payload.sectorId + '-subsector-' + payload.subSectorId;
-            var body = JSON.stringify([
-                payload.pollSlug,
-                {
-                    subSectorId: payload.subSectorId,
-                    institutionId: payload.institutionId,
-                    questionnaireResponse: {
-                        selectedFactors: payload.selectedFactors,
-                        reasonText: ''
+        # STEP 1: Pilih sektor
+        if 'Polling Sector' in text or 'Pilih sektor' in text:
+            log(f'  Selecting sector...')
+            driver.execute_script('''
+                var items = document.querySelectorAll('button, a, [role="button"], [class*="card"], [class*="Card"], div[class*="cursor"]');
+                for (var i = 0; i < items.length; i++) {
+                    var t = (items[i].textContent || '').toLowerCase();
+                    if (t.includes('keuangan') || t.includes('perbankan') || t.includes('pegadaian') ||
+                        t.includes('jasa keuangan') || t.includes('finansial')) {
+                        items[i].click(); return 'clicked: ' + t.substring(0, 50);
                     }
-                },
-                jwt
-            ]);
-            try {
-                var resp = await fetch(url, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'text/plain;charset=UTF-8',
-                        'Accept': 'text/x-component',
-                        'next-action': '709cd13f602d4f2b96ca742284b6a070ccded9e797',
-                        'next-router-state-tree': rscTree
-                    },
-                    body: body,
-                    credentials: 'include'
-                });
-                var text = await resp.text();
-                return { ok: resp.ok, status: resp.status, response: text.substring(0, 2000) };
-            } catch (e) {
-                return { ok: false, error: e.message };
-            }
-        }
-        return await submitVote(arguments[0], arguments[1], arguments[2], arguments[3]);
-        '''
-
-        ref = CONFIG['vote']['ref']
-        result = driver.execute_script(submit_js, jwt, api_payload, ref, rsc_tree)
-
-        if result and result.get('ok'):
-            log(f'  Submit: {result["status"]} {result.get("response", "")[:500]}')
-            if '"success":true' in str(result.get('response', '')):
-                log(f'  ✅ Vote SUBMITTED!')
-                success = True
-            else:
-                log(f'  ⚠️ Response unclear')
-                success = False
-        else:
-            log(f'  ❌ Submit failed: {result}')
-            # Fallback ke UI flow
-            success = False
+                }
+                var cards = document.querySelectorAll('[class*="card"], [class*="Card"], div[class*="cursor"]');
+                if (cards.length > 1) { cards[1].click(); return 'fallback: card[1]'; }
+                return 'no sector found';
+            ''')
+            time.sleep(3)
             text = driver.find_element(By.TAG_NAME, 'body').text
-            if 'Polling Sector' in text or 'Sektor' in text:
-                log(f'  Fallback: UI flow')
+            log(f'  After sector: {text[:150]}...')
+
+        # STEP 2: Pilih subsector
+        if 'subsektor' in text.lower() or 'Pilih sub' in text:
+            log(f'  Selecting subsector...')
+            driver.execute_script('''
+                var items = document.querySelectorAll('button, a, [role="button"], [class*="card"], [class*="Card"], div[class*="cursor"]');
+                for (var i = 0; i < items.length; i++) {
+                    var t = (items[i].textContent || '').toLowerCase();
+                    if (t.includes('gadai') || t.includes('pawn') || t.includes('pegadaian') ||
+                        t.includes('pembiayaan') || t.includes('multiguna')) {
+                        items[i].click(); return 'clicked: ' + t.substring(0, 50);
+                    }
+                }
+                return 'no subsector found';
+            ''')
+            time.sleep(3)
+            text = driver.find_element(By.TAG_NAME, 'body').text
+            log(f'  After subsector: {text[:150]}...')
+
+        # STEP 3: Pilih factors
+        if 'faktor' in text.lower() or 'unggul' in text.lower() or 'nilai' in text.lower():
+            log(f'  Selecting factors...')
+            factors = CONFIG['vote']['selectedFactors']
+            for factor in factors:
+                # Ambil 2 kata pertama untuk matching lebih presisi
+                words = factor.lower().split()[:2]
+                search = ' '.join(words)
+                clicked = driver.execute_script(f'''
+                    // Cari semua clickable elements (bukan header)
+                    var all = document.querySelectorAll('div[class*="cursor"], div[class*="selectable"], label, button, [role="checkbox"], [role="option"]');
+                    for (var i = 0; i < all.length; i++) {{
+                        var el = all[i];
+                        var t = (el.textContent || '').trim();
+                        // Skip kalau text terlalu panjang (header/deskripsi)
+                        if (t.length > 100) continue;
+                        // Skip kalau text mengandung "pilih faktor" atau "Menurut Anda"
+                        if (t.toLowerCase().includes('pilih faktor') || t.toLowerCase().includes('menurut anda')) continue;
+                        if (t.toLowerCase().includes('{search}')) {{
+                            el.click(); return 'clicked: ' + t.substring(0, 80);
+                        }}
+                    }}
+                    return 'not found: {search}';
+                ''')
+                log(f'    → {clicked}')
+                time.sleep(1)
+            time.sleep(2)
+            driver.execute_script('window.scrollTo(0, document.body.scrollHeight)')
+            time.sleep(1)
+
+        # STEP 4: Submit / Lanjut — loop multi-step
+        for submit_attempt in range(5):
+            log(f'  Submit step {submit_attempt + 1}...')
+            text = driver.find_element(By.TAG_NAME, 'body').text
+
+            # Cek apakah sudah di confirmation/result
+            if 'berhasil' in text.lower() or 'success' in text.lower() or 'terima kasih' in text.lower() or 'terima kasih' in text.lower():
+                success = True
+                log(f'  ✅ Vote SUBMITTED!')
+                break
+
+            # Cek apakah di halaman pilih institusi
+            if 'perusahaan' in text.lower() and ('mana' in text.lower() or 'logo' in text.lower() or 'klik' in text.lower()):
+                log(f'  Institution selection — selecting Pegadaian...')
                 driver.execute_script('''
-                    var items = document.querySelectorAll('button, a, [class*="card"], [class*="Card"]');
+                    var items = document.querySelectorAll('button, a, [role="button"], div[class*="cursor"], img, [class*="card"], [class*="Card"]');
                     for (var i = 0; i < items.length; i++) {
-                        if ((items[i].textContent || '').toLowerCase().includes('energi') &&
-                            (items[i].textContent || '').toLowerCase().includes('telekom')) {
-                            items[i].click(); return;
+                        var t = (items[i].textContent || '').toLowerCase();
+                        var alt = (items[i].getAttribute('alt') || '').toLowerCase();
+                        var title = (items[i].getAttribute('title') || '').toLowerCase();
+                        if (t.includes('pegadaian') || alt.includes('pegadaian') || title.includes('pegadaian')) {
+                            items[i].click(); return 'clicked institution: ' + (t || alt || title).substring(0, 50);
                         }
                     }
+                    var imgs = document.querySelectorAll('img');
+                    for (var i = 0; i < imgs.length; i++) {
+                        var alt = (imgs[i].getAttribute('alt') || '').toLowerCase();
+                        if (alt.includes('pegadaian') || alt.includes('gadai')) {
+                            imgs[i].click(); return 'clicked img: ' + alt.substring(0, 50);
+                        }
+                    }
+                    return 'no pegadaian found';
                 ''')
                 time.sleep(3)
 
-            text = driver.find_element(By.TAG_NAME, 'body').text
-            if 'subsektor' in text.lower() or 'Pilih subsektor' in text:
-                log(f'  Fallback: subsector')
-                driver.execute_script('''
-                    var items = document.querySelectorAll('button, a, [class*="card"], [class*="Card"]');
-                    for (var i = 0; i < items.length; i++) {
-                        var t = (items[i].textContent || '').toLowerCase();
-                        if (t.includes('telecommunication') || t.includes('jasa telekom')) {
-                            items[i].click(); return;
-                        }
+            # Coba klik Lanjut/Kirim/Submit
+            submit_result = driver.execute_script('''
+                var buttons = document.querySelectorAll('button');
+                for (var i = buttons.length - 1; i >= 0; i--) {
+                    var t = (buttons[i].textContent || '').toLowerCase().trim();
+                    if (t.includes('kirim') || t.includes('submit') || t.includes('vote') ||
+                        t.includes('selesai') || t.includes('konfirmasi') || t.includes('jawaban') ||
+                        t === 'lanjut' || t.includes('lanjutkan')) {
+                        buttons[i].disabled = false; buttons[i].click();
+                        return 'clicked: [' + i + '] ' + t.substring(0, 50);
                     }
-                ''')
-                time.sleep(5)
-
+                }
+                return 'none';
+            ''')
+            log(f'  → {submit_result}')
+            if 'none' in submit_result:
+                break
+            time.sleep(5)
+        # Cek hasil final
+        if not success:
             text = driver.find_element(By.TAG_NAME, 'body').text
-            if 'faktor' in text.lower() or 'unggul' in text.lower():
-                log(f'  Fallback: factors')
-                for idx in range(3):
-                    driver.execute_script('''
-                        var cards = document.querySelectorAll('div, button, label');
-                        var clicked = 0, targetIndex = arguments[0];
-                        for (var i = 0; i < cards.length; i++) {
-                            var el = cards[i];
-                            var t = (el.textContent || '').trim().toLowerCase();
-                            if (t.includes('pilih faktor') || t.includes('unggul') || t.length < 10) continue;
-                            if (!t.includes('layanan') && !t.includes('informasi') && !t.includes('stabil') &&
-                                !t.includes('keluhan') && !t.includes('hasil') && !t.includes('pembiayaan')) continue;
-                            if (clicked === targetIndex) { el.click(); return; }
-                            clicked++;
-                        }
-                    ''', idx)
-                    time.sleep(1)
-                time.sleep(2)
-
-                driver.execute_script('''
-                    var buttons = document.querySelectorAll('button');
-                    for (var i = buttons.length - 1; i >= 0; i--) {
-                        var t = (buttons[i].textContent || '').toLowerCase();
-                        if (t.includes('kirim') || t.includes('submit') || t.includes('vote') || t.includes('selesai')) {
-                            buttons[i].disabled = false; buttons[i].click(); return;
-                        }
-                    }
-                ''')
-                time.sleep(8)
-                success = True  # UI flow submitted
+            log(f'  Final page: {text[:200]}...')
+            if 'berhasil' in text.lower() or 'success' in text.lower() or 'terima kasih' in text.lower():
+                success = True
+                log(f'  ✅ Vote SUBMITTED!')
 
         # === PHASE 5: Screenshot evidence ===
         evidence_dir = make_evidence_dir()
