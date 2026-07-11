@@ -257,16 +257,17 @@ def process_account(acc):
                 # Coba auto-complete 2FA pakai TOTP
                 if totp:
                     log(f'  2FA detected — generating TOTP code...')
-                    time.sleep(3)
-                    # Cari input untuk TOTP code
+                    time.sleep(5)  # Tunggu page load
                     totp_code = totp.now()
                     log(f'  TOTP: {totp_code}')
                     # Coba masukkan code ke input field
-                    for attempt in range(5):
+                    for attempt in range(10):
                         try:
-                            inputs = driver.find_elements(By.CSS_SELECTOR, 'input[type="text"], input[type="tel"], input[type="number"]')
+                            # Cari semua input types
+                            inputs = driver.find_elements(By.CSS_SELECTOR, 
+                                'input[type="text"], input[type="tel"], input[type="number"], input[type="password"], input[name="totpPin"], input[id="totpPin"]')
                             for inp in inputs:
-                                if inp.is_displayed():
+                                if inp.is_displayed() and len(inp.get_attribute('value') or '') < 6:
                                     inp.clear()
                                     inp.send_keys(totp_code)
                                     time.sleep(1)
@@ -502,7 +503,7 @@ def process_account(acc):
                 for (var i = 0; i < items.length; i++) {
                     var t = (items[i].textContent || '').toLowerCase();
                     if (t.includes('gadai') || t.includes('pawn') || t.includes('pegadaian') ||
-                        t.includes('pembiayaan') || t.includes('multiguna')) {
+                        t.includes('pembiayaan') || t.includes('multiguna') || t.includes('multifinance')) {
                         items[i].click(); return 'clicked: ' + t.substring(0, 50);
                     }
                 }
