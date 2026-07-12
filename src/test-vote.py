@@ -52,7 +52,7 @@ def load_env(path='.env'):
 ENV = load_env(os.path.join(os.path.dirname(__file__), '..', '.env'))
 IMAP_USER = ENV.get('IMAP_USER', '')
 IMAP_PASS = ENV.get('IMAP_PASSWORD', '')
-COMPANY = ENV.get('COMPANY_NAME', 'Galeri 24 Pegadaian')
+COMPANY = CONFIG['vote'].get('companyName', ENV.get('COMPANY_NAME', 'Pegadaian'))
 
 TEMPLATE = os.path.join(os.path.dirname(__file__), '..', 'template', 'index.html')
 SS_PNG = os.path.join(os.path.dirname(__file__), '..', 'template', 'src', 'SS.png')
@@ -500,48 +500,61 @@ def process_account(acc):
         log(f'  Page: {text[:150]}...')
 
         # STEP 1: Pilih sektor
+        subsector_kw = CONFIG['vote'].get('subsectorKeywords', ['multifinance'])
         if 'Polling Sector' in text or 'Pilih sektor' in text:
             log(f'  Selecting sector...')
-            driver.execute_script('''
+            sector_kw = CONFIG['vote'].get('sectorKeywords', ['keuangan', 'perbankan', 'pegadaian', 'jasa keuangan', 'finansial'])
+            kw_js = ' || '.join([f"t.includes('{k}')" for k in sector_kw])
+            driver.execute_script(f'''
                 var items = document.querySelectorAll('button, a, [role="button"], [class*="card"], [class*="Card"], div[class*="cursor"]');
-                for (var i = 0; i < items.length; i++) {
+                for (var i = 0; i < items.length; i++) {{
                     var t = (items[i].textContent || '').toLowerCase();
-                    if (t.includes('keuangan') || t.includes('perbankan') || t.includes('pegadaian') ||
-                        t.includes('jasa keuangan') || t.includes('finansial')) {
+                    if ({kw_js}) {{
                         items[i].click(); return 'clicked: ' + t.substring(0, 50);
-                    }
-                }
+                    }}
+                }}
                 var cards = document.querySelectorAll('[class*="card"], [class*="Card"], div[class*="cursor"]');
-                if (cards.length > 1) { cards[1].click(); return 'fallback: card[1]'; }
+                if (cards.length > 1) {{ cards[1].click(); return 'fallback: card[1]'; }}
                 return 'no sector found';
             ''')
             time.sleep(0.5)  # Minimal delay untuk page transition
-            text = wait_for_text(driver, ['subsektor', 'pilih sub', 'banking', 'multifinance'], timeout=3)
+            text = wait_for_text(driver, ['subsektor', 'pilih sub', 'banking'] + subsector_kw, timeout=3)
             log(f'  After sector: {text[:150]}...')
 
         # STEP 2: Pilih subsector
         if 'subsektor' in text.lower() or 'Pilih sub' in text:
             log(f'  Selecting subsector...')
-            # Tunggu element "Multifinance" muncul dulu
+            sub_kw_js = ' || '.join([f"t.includes('{k}')" for k in subsector_kw])
+            # Tunggu element subsector muncul dulu
             for _ in range(10):
-                found = driver.execute_script('''
-                    // Cari text "Multifinance" lalu klik PARENT-nya (card container)
+                found = driver.execute_script(f'''
+                    // Cari card/button yang mengandung keyword subsector
+                    // Skip heading (text <= 20 char) — itu judul halaman
+                    var items = document.querySelectorAll('button, a, [role="button"], div[class*="cursor"], [class*="card"], [class*="Card"]');
+                    for (var i = 0; i < items.length; i++) {{
+                        var t = (items[i].textContent || '').trim().toLowerCase();
+                        if (t.length > 20) continue;  // skip deskripsi panjang
+                        if (t.length < 3) continue;    // skip kosong
+                        if ({sub_kw_js}) {{
+                            items[i].click(); return 'clicked card: ' + items[i].tagName + ' ' + t.substring(0, 30);
+                        }}
+                    }}
+                    // Fallback: cari text node
                     var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-                    while (walker.nextNode()) {
-                        if (walker.currentNode.textContent.trim().toLowerCase() === 'multifinance') {
+                    while (walker.nextNode()) {{
+                        var t = walker.currentNode.textContent.trim().toLowerCase();
+                        if ({sub_kw_js}) {{
                             var el = walker.currentNode.parentElement;
-                            // Cari card clickable terdekat
-                            for (var p = el; p && p !== document.body; p = p.parentElement) {
+                            for (var p = el; p && p !== document.body; p = p.parentElement) {{
                                 if (p.onclick || p.getAttribute('role') === 'button' ||
                                     p.classList.toString().includes('cursor') ||
-                                    p.tagName === 'BUTTON' || p.tagName === 'A') {
+                                    p.tagName === 'BUTTON' || p.tagName === 'A') {{
                                     p.click(); return 'clicked parent: ' + p.tagName + ' ' + (p.textContent || '').substring(0, 30);
-                                }
-                            }
-                            // Fallback: klik parent langsung
+                                }}
+                            }}
                             el.parentElement.click(); return 'clicked parentElement: ' + el.parentElement.tagName;
-                        }
-                    }
+                        }}
+                    }}
                     return 'not found';
                 ''')
                 if 'clicked' in found:
@@ -606,25 +619,26 @@ def process_account(acc):
 
             # Cek apakah di halaman pilih institusi
             if 'perusahaan' in text.lower() and ('mana' in text.lower() or 'logo' in text.lower() or 'klik' in text.lower()):
-                log(f'  Institution selection — selecting Pegadaian...')
-                driver.execute_script('''
+                inst_name = CONFIG['vote'].get('institutionName', 'Pegadaian').lower()
+                log(f'  Institution selection — selecting {inst_name}...')
+                driver.execute_script(f'''
                     var items = document.querySelectorAll('button, a, [role="button"], div[class*="cursor"], img, [class*="card"], [class*="Card"]');
-                    for (var i = 0; i < items.length; i++) {
+                    for (var i = 0; i < items.length; i++) {{
                         var t = (items[i].textContent || '').toLowerCase();
                         var alt = (items[i].getAttribute('alt') || '').toLowerCase();
                         var title = (items[i].getAttribute('title') || '').toLowerCase();
-                        if (t.includes('pegadaian') || alt.includes('pegadaian') || title.includes('pegadaian')) {
+                        if (t.includes('{inst_name}') || alt.includes('{inst_name}') || title.includes('{inst_name}')) {{
                             items[i].click(); return 'clicked institution: ' + (t || alt || title).substring(0, 50);
-                        }
-                    }
+                        }}
+                    }}
                     var imgs = document.querySelectorAll('img');
-                    for (var i = 0; i < imgs.length; i++) {
+                    for (var i = 0; i < imgs.length; i++) {{
                         var alt = (imgs[i].getAttribute('alt') || '').toLowerCase();
-                        if (alt.includes('pegadaian') || alt.includes('gadai')) {
+                        if (alt.includes('{inst_name}') || alt.includes('gadai')) {{
                             imgs[i].click(); return 'clicked img: ' + alt.substring(0, 50);
-                        }
-                    }
-                    return 'no pegadaian found';
+                        }}
+                    }}
+                    return 'no {inst_name} found';
                 ''')
                 time.sleep(3)
 
