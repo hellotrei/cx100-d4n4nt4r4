@@ -141,23 +141,17 @@ def get_otp(im_user=None, im_pass=None, timeout=90):
             mail = imaplib.IMAP4_SSL('imap.gmail.com', 993)
             mail.login(im_user, im_pass)
             mail.select('INBOX')
-            # Search ALL emails (bukan cuma UNSEEN — Gmail bisa auto-read)
-            _, data = mail.search(None, 'ALL')
-            now = time.time()
-            for num in reversed(data[0].split()[-10:]):
+            # Cari email terbaru dengan date filter (5 menit terakhir)
+            from email.utils import parsedate_to_datetime
+            from datetime import datetime, timezone, timedelta
+            five_min_ago = (datetime.now(timezone.utc) - timedelta(minutes=5)).strftime('%d-%b-%Y')
+            _, data = mail.search(None, f'(SINCE {five_min_ago})')
+            # Ambil dari yang paling baru (reversed)
+            msg_nums = data[0].split()
+            for num in reversed(msg_nums):
                 _, msg_data = mail.fetch(num, '(RFC822)')
                 msg = email_module.message_from_bytes(msg_data[0][1])
                 subj = msg.get('subject', '')
-                date_str = msg.get('date', '')
-                # Parse email date
-                try:
-                    from email.utils import parsedate_to_datetime
-                    email_date = parsedate_to_datetime(date_str)
-                    email_age = now - email_date.timestamp()
-                    if email_age > 600:  # Skip emails older than 10 minutes
-                        continue
-                except:
-                    pass
                 if any(w in subj.lower() for w in ['polling', 'danantara', 'cx100', 'verifikasi', 'otp']):
                     body = ''
                     if msg.is_multipart():
@@ -572,6 +566,40 @@ def process_account(acc):
         text = driver.find_element(By.TAG_NAME, 'body').text
         log(f'  Page text: {text[:200]}')
 
+        # === CASE: Pre Polling — Verifikasi Peserta (email verifikasi baru) ===
+        if 'pre polling' in text.lower() or 'verifikasi peserta' in text.lower():
+            log(f'  Pre Polling verification detected')
+            # Klik "Cek Email" / "Kirim kode" button
+            driver.execute_script('''
+                var btns = document.querySelectorAll('button, a');
+                for (var i = 0; i < btns.length; i++) {
+                    var t = (btns[i].textContent || '').toLowerCase();
+                    if (t.includes('kirim') || t.includes('cek email') || t.includes('verifikasi') || t.includes('masukkan kode')) {
+                        btns[i].disabled = false; btns[i].click(); return 'clicked: ' + t;
+                    }
+                }
+            ''')
+            time.sleep(2)
+            # Ambil OTP dari email verifikasi
+            otp = get_otp(im_user=im_user, im_pass=im_pass, timeout=90)
+            if otp:
+                log(f'  Pre Polling OTP: {otp}')
+                for inp in driver.find_elements(By.CSS_SELECTOR, 'input'):
+                    if inp.is_displayed():
+                        inp.click()
+                        inp.clear()
+                        inp.send_keys(otp)
+                        log(f'  OTP typed')
+                        time.sleep(1)
+                        try: inp.send_keys(Keys.RETURN)
+                        except: pass
+                        break
+                time.sleep(3)
+                text = driver.find_element(By.TAG_NAME, 'body').text
+                log(f'  After Pre Polling OTP: {text[:200]}...')
+            else:
+                log(f'  ❌ No Pre Polling OTP received')
+
         # Cek apakah sudah di OTP page
         is_otp_page = 'kode' in text.lower() or 'otp' in text.lower() or 'inbox' in text.lower() or 'masukkan' in text.lower()
         is_email_page = ('langkah 1' in text.lower() or 'kebijakan' in text.lower()) and not is_otp_page
@@ -628,11 +656,40 @@ def process_account(acc):
                 except: pass
                 # Tunggu page transition setelah OTP submit
                 log(f'  Waiting for OTP verification...')
-                time.sleep(10)
+                time.sleep(5)
                 # Cek page text setelah OTP
                 try:
                     text_after = driver.find_element(By.TAG_NAME, 'body').text
                     log(f'  After OTP: {text_after[:200]}...')
+                    # === CASE: Pre Polling muncul setelah Google OTP ===
+                    if 'pre polling' in text_after.lower() or 'verifikasi peserta' in text_after.lower():
+                        log(f'  Pre Polling verification detected (post-OTP)')
+                        # Klik "Cek Email" / "Kirim kode"
+                        driver.execute_script('''
+                            var btns = document.querySelectorAll('button, a');
+                            for (var i = 0; i < btns.length; i++) {
+                                var t = (btns[i].textContent || '').toLowerCase();
+                                if (t.includes('kirim') || t.includes('cek email') || t.includes('verifikasi') || t.includes('masukkan kode')) {
+                                    btns[i].disabled = false; btns[i].click(); return 'clicked: ' + t;
+                                }
+                            }
+                        ''')
+                        time.sleep(2)
+                        # Ambil OTP baru dari email verifikasi
+                        otp2 = get_otp(im_user=im_user, im_pass=im_pass, timeout=90)
+                        if otp2:
+                            log(f'  Pre Polling OTP: {otp2}')
+                            for inp in driver.find_elements(By.CSS_SELECTOR, 'input'):
+                                if inp.is_displayed():
+                                    inp.click()
+                                    inp.clear()
+                                    inp.send_keys(otp2)
+                                    log(f'  OTP typed')
+                                    time.sleep(1)
+                                    try: inp.send_keys(Keys.RETURN)
+                                    except: pass
+                                    break
+                            time.sleep(3)
                 except: pass
             else:
                 log(f'  ❌ No OTP input found')
