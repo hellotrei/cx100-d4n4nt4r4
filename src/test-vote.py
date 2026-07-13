@@ -1,6 +1,8 @@
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 import time, json, imaplib, email as email_module, re, os, subprocess
 from datetime import datetime, timezone, timedelta
 
@@ -21,6 +23,43 @@ def wait_for_text(driver, text_match, timeout=3, poll=0.3):
         except: pass
         time.sleep(poll)
     return text
+
+def xpath_text_click(driver, text, timeout=2):
+    """XPath text match + click. Return True jika berhasil."""
+    try:
+        text_lower = text.lower()
+        # Cari card/button yang mengandung text (bukan heading)
+        xpaths = [
+            f"//button[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'), '{text_lower}')]",
+            f"//div[contains(@class,'card') or contains(@class,'Card') or contains(@class,'cursor')][contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'), '{text_lower}')]",
+            f"//span[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'), '{text_lower}')]",
+        ]
+        for xpath in xpaths:
+            try:
+                el = WebDriverWait(driver, 1).until(
+                    EC.element_to_be_clickable((By.XPATH, xpath))
+                )
+                # Skip heading elements
+                tag = el.tag_name.lower()
+                if tag in ('h1', 'h2', 'h3', 'h4', 'h5', 'h6'):
+                    continue
+                # Klik parent kalau element bukan button/div clickable
+                if tag in ('span', 'p', 'label', 'strong'):
+                    try:
+                        parent = el.find_element(By.XPATH, '..')
+                        parent_tag = parent.tag_name.lower()
+                        if parent_tag in ('button', 'a') or 'cursor' in (parent.get_attribute('class') or ''):
+                            parent.click()
+                            return True
+                    except:
+                        pass
+                el.click()
+                return True
+            except:
+                continue
+        return False
+    except:
+        return False
 
 def wait_for_url(driver, pattern, timeout=3, poll=0.3):
     """Poll URL sampai mengandung pattern."""
@@ -499,81 +538,106 @@ def process_account(acc):
         text = driver.find_element(By.TAG_NAME, 'body').text
         log(f'  Page: {text[:150]}...')
 
-        # STEP 1: Pilih sektor
+        # STEP 1: Pilih sektor — PRIMARY: XPath text match
         subsector_kw = CONFIG['vote'].get('subsectorKeywords', ['multifinance'])
         if 'Polling Sector' in text or 'Pilih sektor' in text:
             log(f'  Selecting sector...')
             sector_kw = CONFIG['vote'].get('sectorKeywords', ['keuangan', 'perbankan', 'pegadaian', 'jasa keuangan', 'finansial'])
-            kw_js = ' || '.join([f"t.includes('{k}')" for k in sector_kw])
-            driver.execute_script(f'''
-                var items = document.querySelectorAll('button, a, [role="button"], [class*="card"], [class*="Card"], div[class*="cursor"]');
-                for (var i = 0; i < items.length; i++) {{
-                    var t = (items[i].textContent || '').toLowerCase();
-                    if ({kw_js}) {{
-                        items[i].click(); return 'clicked: ' + t.substring(0, 50);
+            # PRIMARY: XPath text match (Playwright-inspired, cepat)
+            clicked = False
+            for kw in sector_kw:
+                if xpath_text_click(driver, kw, timeout=2):
+                    log(f'  → xpath clicked: {kw}')
+                    clicked = True
+                    break
+            # FALLBACK: iterate elements (kalau XPath gagal)
+            if not clicked:
+                kw_js = ' || '.join([f"t.includes('{k}')" for k in sector_kw])
+                driver.execute_script(f'''
+                    var items = document.querySelectorAll('button, a, [role="button"], [class*="card"], [class*="Card"], div[class*="cursor"]');
+                    for (var i = 0; i < items.length; i++) {{
+                        var t = (items[i].textContent || '').toLowerCase();
+                        if ({kw_js}) {{
+                            items[i].click(); return 'clicked: ' + t.substring(0, 50);
+                        }}
                     }}
-                }}
-                var cards = document.querySelectorAll('[class*="card"], [class*="Card"], div[class*="cursor"]');
-                if (cards.length > 1) {{ cards[1].click(); return 'fallback: card[1]'; }}
-                return 'no sector found';
-            ''')
-            time.sleep(0.5)  # Minimal delay untuk page transition
-            text = wait_for_text(driver, ['subsektor', 'pilih sub', 'banking'] + subsector_kw, timeout=3)
+                    var cards = document.querySelectorAll('[class*="card"], [class*="Card"], div[class*="cursor"]');
+                    if (cards.length > 1) {{ cards[1].click(); return 'fallback: card[1]'; }}
+                    return 'no sector found';
+                ''')
+                log(f'  → fallback iterate clicked')
+            time.sleep(0.5)
+            text = wait_for_text(driver, ['subsektor', 'pilih sub', 'banking'] + subsector_kw, timeout=2)
             log(f'  After sector: {text[:150]}...')
 
-        # STEP 2: Pilih subsector
+        # STEP 2: Pilih subsector — PRIMARY: XPath text match
         if 'subsektor' in text.lower() or 'Pilih sub' in text:
             log(f'  Selecting subsector...')
-            sub_kw_js = ' || '.join([f"t.includes('{k}')" for k in subsector_kw])
-            # Tunggu element subsector muncul dulu
-            for _ in range(10):
-                found = driver.execute_script(f'''
-                    // Cari card/button yang mengandung keyword subsector
-                    // Skip heading (text <= 20 char) — itu judul halaman
-                    var items = document.querySelectorAll('button, a, [role="button"], div[class*="cursor"], [class*="card"], [class*="Card"]');
-                    for (var i = 0; i < items.length; i++) {{
-                        var t = (items[i].textContent || '').trim().toLowerCase();
-                        if (t.length > 20) continue;  // skip deskripsi panjang
-                        if (t.length < 3) continue;    // skip kosong
-                        if ({sub_kw_js}) {{
-                            items[i].click(); return 'clicked card: ' + items[i].tagName + ' ' + t.substring(0, 30);
-                        }}
-                    }}
-                    // Fallback: cari text node
-                    var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-                    while (walker.nextNode()) {{
-                        var t = walker.currentNode.textContent.trim().toLowerCase();
-                        if ({sub_kw_js}) {{
-                            var el = walker.currentNode.parentElement;
-                            for (var p = el; p && p !== document.body; p = p.parentElement) {{
-                                if (p.onclick || p.getAttribute('role') === 'button' ||
-                                    p.classList.toString().includes('cursor') ||
-                                    p.tagName === 'BUTTON' || p.tagName === 'A') {{
-                                    p.click(); return 'clicked parent: ' + p.tagName + ' ' + (p.textContent || '').substring(0, 30);
-                                }}
-                            }}
-                            el.parentElement.click(); return 'clicked parentElement: ' + el.parentElement.tagName;
-                        }}
-                    }}
-                    return 'not found';
-                ''')
-                if 'clicked' in found:
-                    log(f'  → {found}')
+            # PRIMARY: XPath text match (Playwright-inspired, cepat)
+            clicked = False
+            for kw in subsector_kw:
+                if xpath_text_click(driver, kw, timeout=2):
+                    log(f'  → xpath clicked: {kw}')
+                    clicked = True
                     break
-                time.sleep(0.3)
+            # FALLBACK: iterate elements (kalau XPath gagal)
+            if not clicked:
+                sub_kw_js = ' || '.join([f"t.includes('{k}')" for k in subsector_kw])
+                for _ in range(10):
+                    found = driver.execute_script(f'''
+                        var items = document.querySelectorAll('button, a, [role="button"], div[class*="cursor"], [class*="card"], [class*="Card"]');
+                        for (var i = 0; i < items.length; i++) {{
+                            var t = (items[i].textContent || '').trim().toLowerCase();
+                            if (t.length > 20) continue;
+                            if (t.length < 3) continue;
+                            if ({sub_kw_js}) {{
+                                items[i].click(); return 'clicked card: ' + items[i].tagName + ' ' + t.substring(0, 30);
+                            }}
+                        }}
+                        var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+                        while (walker.nextNode()) {{
+                            var t = walker.currentNode.textContent.trim().toLowerCase();
+                            if ({sub_kw_js}) {{
+                                var el = walker.currentNode.parentElement;
+                                for (var p = el; p && p !== document.body; p = p.parentElement) {{
+                                    if (p.onclick || p.getAttribute('role') === 'button' ||
+                                        p.classList.toString().includes('cursor') ||
+                                        p.tagName === 'BUTTON' || p.tagName === 'A') {{
+                                        p.click(); return 'clicked parent: ' + p.tagName + ' ' + (p.textContent || '').substring(0, 30);
+                                    }}
+                                }}
+                                el.parentElement.click(); return 'clicked parentElement: ' + el.parentElement.tagName;
+                            }}
+                        }}
+                        return 'not found';
+                    ''')
+                    if 'clicked' in found:
+                        log(f'  → {found}')
+                        break
+                    time.sleep(0.3)
+                log(f'  → fallback iterate clicked')
             time.sleep(0.5)
-            # Klik "Lanjut" setelah select subsector
-            driver.execute_script('''
-                var btns = document.querySelectorAll('button');
-                for (var i = btns.length - 1; i >= 0; i--) {
-                    var t = (btns[i].textContent || '').toLowerCase().trim();
-                    if (t === 'lanjut' || t.includes('lanjutkan')) {
-                        btns[i].disabled = false; btns[i].click(); return 'clicked: ' + t;
+            # Klik "Lanjut" — PRIMARY: XPath
+            lanjut_clicked = False
+            try:
+                btn = WebDriverWait(driver, 2).until(
+                    EC.element_to_be_clickable((By.XPATH, "//button[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'), 'lanjut')]"))
+                )
+                driver.execute_script("arguments[0].disabled = false; arguments[0].click();", btn)
+                lanjut_clicked = True
+            except:
+                # FALLBACK: iterate buttons
+                driver.execute_script('''
+                    var btns = document.querySelectorAll('button');
+                    for (var i = btns.length - 1; i >= 0; i--) {
+                        var t = (btns[i].textContent || '').toLowerCase().trim();
+                        if (t === 'lanjut' || t.includes('lanjutkan')) {
+                            btns[i].disabled = false; btns[i].click(); return 'clicked: ' + t;
+                        }
                     }
-                }
-            ''')
+                ''')
             time.sleep(0.5)
-            text = wait_for_text(driver, ['faktor', 'unggul', 'pilih faktor', 'menurut anda', 'logo'], timeout=3)
+            text = wait_for_text(driver, ['faktor', 'unggul', 'pilih faktor', 'menurut anda', 'logo'], timeout=2)
             log(f'  After subsector: {text[:150]}...')
 
         # STEP 3: Pilih factors
