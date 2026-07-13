@@ -92,8 +92,6 @@ def load_env(path='.env'):
     return env
 
 ENV = load_env(os.path.join(os.path.dirname(__file__), '..', '.env'))
-IMAP_USER = ENV.get('IMAP_USER', '')
-IMAP_PASS = ENV.get('IMAP_PASSWORD', '')
 COMPANY = CONFIG['vote'].get('companyName', ENV.get('COMPANY_NAME', 'Pegadaian'))
 
 TEMPLATE = os.path.join(os.path.dirname(__file__), '..', 'template', 'index.html')
@@ -101,8 +99,6 @@ SS_PNG = os.path.join(os.path.dirname(__file__), '..', 'template', 'src', 'SS.pn
 
 # === TOTP (Google Authenticator) ===
 import pyotp
-TOTP_SECRET = ENV.get('TOTP_SECRET', '')
-totp = pyotp.TOTP(TOTP_SECRET) if TOTP_SECRET else None
 
 # === DOT VARIATION GENERATOR ===
 # Gmail ignore dots di local part: a.b@c = ab@c = a..b@c
@@ -238,11 +234,22 @@ def process_account(acc):
     poll_email = variations[acc.get('variation_index', 0) % len(variations)]
     log(f'[{base_email}] poll_email={poll_email}')
 
-    subprocess.run(['pkill', '-f', 'undetected_chromedriver'], capture_output=True)
+    # Per-account credentials
+    im_user = acc.get('imap_user', base_email)
+    im_pass = acc.get('imap_password', '')
+    totp_secret = acc.get('totp_secret', '')
+    totp = pyotp.TOTP(totp_secret) if totp_secret else None
+    chrome_profile = acc.get('chrome_profile', '')
+
+    # Kill only THIS account's chrome (by profile path), not others
+    if chrome_profile:
+        subprocess.run(['pkill', '-f', chrome_profile], capture_output=True)
+    else:
+        subprocess.run(['pkill', '-f', 'undetected_chromedriver'], capture_output=True)
     time.sleep(1)
 
     # Chrome profile: pakai existing profile yang udah login Google
-    chrome_user_data = ENV.get('CHROME_USER_DATA_DIR', '')
+    chrome_user_data = chrome_profile or ENV.get('CHROME_USER_DATA_DIR', '')
     if chrome_user_data:
         chrome_opts = uc.ChromeOptions()
         chrome_opts.add_argument(f'--user-data-dir={chrome_user_data}')
@@ -321,42 +328,88 @@ def process_account(acc):
 
             # Cek apakah butuh 2FA / manual intervention
             if 'challenge' in driver.current_url or 'signin' in driver.current_url:
-                # Coba auto-complete 2FA pakai TOTP
-                if totp:
-                    log(f'  2FA detected — generating TOTP code...')
-                    time.sleep(5)  # Tunggu page load
-                    totp_code = totp.now()
-                    log(f'  TOTP: {totp_code}')
-                    # Coba masukkan code ke input field
-                    for attempt in range(10):
-                        try:
-                            # Cari semua input types
-                            inputs = driver.find_elements(By.CSS_SELECTOR, 
-                                'input[type="text"], input[type="tel"], input[type="number"], input[type="password"], input[name="totpPin"], input[id="totpPin"]')
-                            for inp in inputs:
-                                if inp.is_displayed() and len(inp.get_attribute('value') or '') < 6:
-                                    inp.clear()
-                                    inp.send_keys(totp_code)
-                                    time.sleep(1)
-                                    # Klik submit/next
-                                    driver.execute_script('''
-                                        var btns = document.querySelectorAll('button');
-                                        for (var i = 0; i < btns.length; i++) {
-                                            var t = (btns[i].textContent || '').toLowerCase();
-                                            if (t.includes('next') || t.includes('submit') || t.includes('verif') || t.includes('lanjut')) {
-                                                btns[i].click(); return;
+                time.sleep(3)  # Tunggu page load
+                page_text = driver.find_element(By.TAG_NAME, 'body').text
+                
+                # CASE 1: Re-authentication (password page)
+                if 'sign in again' in page_text.lower() or 'verify it' in page_text.lower():
+                    log(f'  Re-authentication detected — entering password...')
+                    try:
+                        # Klik "Next" dulu
+                        driver.execute_script('''
+                            var btns = document.querySelectorAll('button');
+                            for (var i = 0; i < btns.length; i++) {
+                                var t = btns[i].textContent.toLowerCase().trim();
+                                if (t === 'next' || t.includes('lanjut')) { btns[i].click(); return; }
+                            }
+                        ''')
+                        time.sleep(3)
+                        pw_input = driver.find_element(By.CSS_SELECTOR, 'input[type="password"]')
+                        pw_input.clear()
+                        pw_input.send_keys(password)
+                        time.sleep(1)
+                        driver.execute_script('''
+                            var btns = document.querySelectorAll('button');
+                            for (var i = 0; i < btns.length; i++) {
+                                var t = btns[i].textContent.toLowerCase().trim();
+                                if (t === 'next' || t.includes('lanjut')) { btns[i].click(); return; }
+                            }
+                        ''')
+                        log(f'  Password submitted')
+                        time.sleep(5)
+                        if 'challenge' not in driver.current_url and 'signin' not in driver.current_url:
+                            log(f'  Login OK after re-auth')
+                    except Exception as e:
+                        log(f'  Re-auth error: {str(e)[:100]}')
+                
+                # CASE 2: TOTP page
+                if 'challenge' in driver.current_url or 'signin' in driver.current_url:
+                    # Coba auto-complete 2FA pakai TOTP
+                    if totp:
+                        log(f'  2FA detected — generating TOTP code...')
+                        time.sleep(5)  # Tunggu page load
+                        totp_code = totp.now()
+                        log(f'  TOTP: {totp_code}')
+                        # Debug: log page info
+                        log(f'  URL: {driver.current_url[:100]}')
+                        page_text = driver.find_element(By.TAG_NAME, 'body').text[:200]
+                        log(f'  Page: {page_text}')
+                        # Coba masukkan code ke input field
+                        for attempt in range(10):
+                            try:
+                                # Cari semua input types
+                                inputs = driver.find_elements(By.CSS_SELECTOR, 
+                                    'input[type="text"], input[type="tel"], input[type="number"], input[type="password"], input[name="totpPin"], input[id="totpPin"], input[inputmode="numeric"]')
+                                log(f'  Found {len(inputs)} input fields')
+                                for inp in inputs:
+                                    displayed = inp.is_displayed()
+                                    val = inp.get_attribute('value') or ''
+                                    name = inp.get_attribute('name') or ''
+                                    itype = inp.get_attribute('type') or ''
+                                    log(f'    input: type={itype} name={name} displayed={displayed} value_len={len(val)}')
+                                    if displayed and len(val) < 6:
+                                        inp.clear()
+                                        inp.send_keys(totp_code)
+                                        time.sleep(1)
+                                        # Klik submit/next
+                                        driver.execute_script('''
+                                            var btns = document.querySelectorAll('button');
+                                            for (var i = 0; i < btns.length; i++) {
+                                                var t = (btns[i].textContent || '').toLowerCase();
+                                                if (t.includes('next') || t.includes('submit') || t.includes('verif') || t.includes('lanjut')) {
+                                                    btns[i].click(); return;
+                                                }
                                             }
-                                        }
-                                    ''')
-                                    log(f'  TOTP submitted')
-                                    break
-                            break
-                        except:
-                            time.sleep(1)
-                    time.sleep(5)
-                    # Re-check
-                    if 'challenge' not in driver.current_url and 'signin' not in driver.current_url:
-                        log(f'  Login OK (TOTP)')
+                                        ''')
+                                        log(f'  TOTP submitted')
+                                        break
+                                break
+                            except:
+                                time.sleep(1)
+                        time.sleep(5)
+                        # Re-check
+                        if 'challenge' not in driver.current_url and 'signin' not in driver.current_url:
+                            log(f'  Login OK (TOTP)')
                     else:
                         log(f'  ⚠️ TOTP failed — need manual login')
                         # Fallback: manual wait
@@ -502,7 +555,7 @@ def process_account(acc):
         time.sleep(1)
 
         # Coba get OTP dari IMAP (timeout 90 detik — email mungkin delay)
-        otp = get_otp(im_user=IMAP_USER, im_pass=IMAP_PASS, timeout=90)
+        otp = get_otp(im_user=im_user, im_pass=im_pass, timeout=90)
         if otp:
             log(f'  OTP: {otp}')
             # Cari input field untuk OTP

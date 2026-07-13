@@ -21,7 +21,6 @@ def run_vote():
         capture_output=True, text=True, timeout=300
     )
     output = result.stdout + result.stderr
-    # Cari baris DONE
     for line in output.split('\n'):
         if 'DONE:' in line:
             print(f'  {line.strip()}')
@@ -30,14 +29,14 @@ def run_vote():
 
 def main():
     batch_size = int(sys.argv[1]) if len(sys.argv) > 1 else 10
-    delay = int(sys.argv[2]) if len(sys.argv) > 2 else 10  # detik antar vote
+    delay = int(sys.argv[2]) if len(sys.argv) > 2 else 10
 
     accounts = load_accounts()
     if not accounts:
         print('No accounts in accounts.json')
         return
 
-    acc = accounts[0]  # pakai akun pertama
+    acc = accounts[0]
     start_index = acc.get('variation_index', 0)
 
     print(f'=== CX100 Batch Vote ===')
@@ -72,8 +71,7 @@ def main():
             print(f'  ❌ ERROR: {str(e)[:80]} ({failed}/{i+1})')
 
         # Cleanup Chrome
-        subprocess.run(['pkill', '-9', '-f', 'chrome'], capture_output=True)
-        subprocess.run(['pkill', '-9', '-f', 'chromedriver'], capture_output=True)
+        subprocess.run(['pkill', '-9', '-f', 'undetected_chromedriver'], capture_output=True)
 
         if i < batch_size - 1:
             print(f'  Waiting {delay}s...')
@@ -81,7 +79,6 @@ def main():
 
     print(f'\n=== BATCH DONE: {success}/{batch_size} success, {failed} failed ===')
 
-    # Update variation_index ke angka berikutnya supaya batch berikutnya mulai dari index baru
     acc['variation_index'] = start_index + batch_size
     save_accounts(accounts)
     print(f'Next variation_index: {acc["variation_index"]}')

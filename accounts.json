@@ -3,6 +3,10 @@
     "email": "aishahumairanaurashasmira@gmail.com",
     "poll_email": "aishahumairanaurashasmira@googlemail.com",
     "password": "Qwertyui00",
-    "variation_index": 126
+    "variation_index": 255,
+    "imap_user": "aishahumairanaurashasmira@gmail.com",
+    "imap_password": "afpcqqtxrpawgram",
+    "totp_secret": "ihjbudkuxficnx5ogqx2dv45runrre7d",
+    "chrome_profile": ""
   }
 ]
