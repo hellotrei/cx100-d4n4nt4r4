@@ -4,7 +4,7 @@ import json, time, subprocess, sys, os
 
 ACCOUNTS_FILE = os.path.join(os.path.dirname(__file__), '..', 'accounts.json')
 VOTE_SCRIPT = os.path.join(os.path.dirname(__file__), 'test-vote.py')
-PYTHON = sys.executable
+PYTHON = '/Users/trei/.local/bin/python3.11'
 
 def load_accounts():
     with open(ACCOUNTS_FILE) as f:

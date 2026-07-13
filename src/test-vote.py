@@ -573,11 +573,11 @@ def process_account(acc):
                 }
             ''')
             time.sleep(0.5)
-            text = wait_for_text(driver, ['faktor', 'unggul', 'nilai', 'perusahaan', 'logo'], timeout=3)
+            text = wait_for_text(driver, ['faktor', 'unggul', 'pilih faktor', 'menurut anda', 'logo'], timeout=3)
             log(f'  After subsector: {text[:150]}...')
 
         # STEP 3: Pilih factors
-        if 'faktor' in text.lower() or 'unggul' in text.lower() or 'nilai' in text.lower():
+        if 'faktor' in text.lower() or 'unggul' in text.lower() or 'pilih faktor' in text.lower() or 'menurut anda' in text.lower():
             log(f'  Selecting factors...')
             factors = CONFIG['vote']['selectedFactors']
             for factor in factors:
