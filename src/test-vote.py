@@ -226,6 +226,7 @@ NEXT_ACTION_ID = '709cd13f602d4f2b96ca742284b6a070ccded9e797'
 
 
 def process_account(acc):
+    global _driver
     base_email = acc['email']  # Gmail asli (untuk login + IMAP)
     password = acc['password']
     # Poll email: dot variation dari base_email, atau explicit dari accounts.json
@@ -241,22 +242,71 @@ def process_account(acc):
     totp = pyotp.TOTP(totp_secret) if totp_secret else None
     chrome_profile = acc.get('chrome_profile', '')
 
-    # Kill only THIS account's chrome (by profile path), not others
-    if chrome_profile:
-        subprocess.run(['pkill', '-f', chrome_profile], capture_output=True)
-    else:
-        subprocess.run(['pkill', '-f', 'undetected_chromedriver'], capture_output=True)
-    time.sleep(1)
+    # Per-account credentials
+    im_user = acc.get('imap_user', base_email)
+    im_pass = acc.get('imap_password', '')
+    totp_secret = acc.get('totp_secret', '')
+    totp = pyotp.TOTP(totp_secret) if totp_secret else None
+    chrome_profile = acc.get('chrome_profile', '')
 
-    # Chrome profile: pakai existing profile yang udah login Google
+    # Chrome profile path
     chrome_user_data = chrome_profile or ENV.get('CHROME_USER_DATA_DIR', '')
-    if chrome_user_data:
-        chrome_opts = uc.ChromeOptions()
-        chrome_opts.add_argument(f'--user-data-dir={chrome_user_data}')
-        chrome_opts.add_argument('--disable-extensions')
-        driver = uc.Chrome(options=chrome_opts, headless=False, use_subprocess=True)
-    else:
-        driver = uc.Chrome(headless=False, use_subprocess=True)
+
+    # === HEALTH CHECK: cek driver existing atau buat baru ===
+    global _driver
+    driver = None
+
+    def start_chrome():
+        nonlocal driver
+        if chrome_profile:
+            subprocess.run(['pkill', '-f', chrome_profile], capture_output=True)
+        else:
+            subprocess.run(['pkill', '-f', 'undetected_chromedriver'], capture_output=True)
+        time.sleep(1)
+
+        if chrome_user_data:
+            chrome_opts = uc.ChromeOptions()
+            chrome_opts.add_argument(f'--user-data-dir={chrome_user_data}')
+            chrome_opts.add_argument('--disable-extensions')
+            driver = uc.Chrome(options=chrome_opts, headless=False, use_subprocess=True)
+        else:
+            driver = uc.Chrome(headless=False, use_subprocess=True)
+        return driver
+
+    def chrome_alive():
+        """Cek apakah Chrome masih responsif."""
+        try:
+            _ = driver.title
+            return True
+        except:
+            return False
+
+    def google_session_ok():
+        """Cek apakah Google session masih valid."""
+        try:
+            driver.get('https://myaccount.google.com')
+            time.sleep(2)
+            url = driver.current_url
+            return 'signin' not in url and 'challenge' not in url
+        except:
+            return False
+
+    # Cek driver existing atau buat baru
+    try:
+        if _driver and chrome_alive():
+            driver = _driver
+            log(f'  Reusing existing Chrome')
+            # Clear cookies + storage untuk vote baru
+            driver.delete_all_cookies()
+            driver.execute_script('sessionStorage.clear(); localStorage.clear();')
+        else:
+            log(f'  Starting new Chrome...')
+            driver = start_chrome()
+    except:
+        log(f'  Starting new Chrome (fallback)...')
+        driver = start_chrome()
+    _driver = driver
+
     try:
         # === CDP hook: install fetch interceptor SEBELUM page load ===
         # Page.addScriptToEvaluateOnNewDocument inject JS sebelum Next.js load,
@@ -800,10 +850,15 @@ def process_account(acc):
 
     except Exception as e:
         log(f'  ❌ {str(e)[:200]}')
-        return False
-    finally:
+        # Cleanup on error — tutup Chrome
         try: driver.quit()
         except: pass
+        _driver = None
+        return False
+    # JANGAN quit Chrome di sini — biarkan hidup untuk vote berikutnya
+
+# Global driver state
+_driver = None
 
 # Main
 log(f'=== CX100 Auto Vote ({len(ACCOUNTS)} accounts) ===')

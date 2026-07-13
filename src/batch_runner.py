@@ -70,8 +70,8 @@ def main():
             failed += 1
             print(f'  ❌ ERROR: {str(e)[:80]} ({failed}/{i+1})')
 
-        # Cleanup Chrome
-        subprocess.run(['pkill', '-9', '-f', 'undetected_chromedriver'], capture_output=True)
+        # JANGAN kill Chrome — biarkan hidup untuk vote berikutnya
+        # Chrome hanya di-restart oleh process_account kalau crash/session expire
 
         if i < batch_size - 1:
             print(f'  Waiting {delay}s...')
