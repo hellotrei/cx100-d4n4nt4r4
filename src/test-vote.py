@@ -9,7 +9,7 @@ from datetime import datetime, timezone, timedelta
 WIB = timezone(timedelta(hours=7))
 
 # === OPTIMIZATION: Element polling instead of time.sleep ===
-def wait_for_text(driver, text_match, timeout=3, poll=0.3):
+def wait_for_text(driver, text_match, timeout=1, poll=0.1):
     """Poll body text sampai mengandung text_match. Return text final."""
     deadline = time.time() + timeout
     text = ''
@@ -43,16 +43,19 @@ def xpath_text_click(driver, text, timeout=2):
                 tag = el.tag_name.lower()
                 if tag in ('h1', 'h2', 'h3', 'h4', 'h5', 'h6'):
                     continue
-                # Klik parent kalau element bukan button/div clickable
-                if tag in ('span', 'p', 'label', 'strong'):
-                    try:
-                        parent = el.find_element(By.XPATH, '..')
-                        parent_tag = parent.tag_name.lower()
-                        if parent_tag in ('button', 'a') or 'cursor' in (parent.get_attribute('class') or ''):
-                            parent.click()
-                            return True
-                    except:
-                        pass
+                # Untuk span/p/label: traverse up ke clickable parent
+                if tag in ('span', 'p', 'label', 'strong', 'a'):
+                    p = el
+                    for _ in range(5):  # max 5 level up
+                        try:
+                            p = p.find_element(By.XPATH, '..')
+                            pt = p.tag_name.lower()
+                            cls = (p.get_attribute('class') or '').lower()
+                            if pt in ('button', 'a') or 'cursor' in cls or p.get_attribute('role') == 'button':
+                                p.click()
+                                return True
+                        except:
+                            break
                 el.click()
                 return True
             except:
@@ -173,7 +176,7 @@ def get_otp(im_user=None, im_pass=None, timeout=90):
                         return m.group(1)
             mail.logout()
         except: pass
-        time.sleep(3)
+        time.sleep(1)
     return None
 
 def make_evidence_dir():
@@ -299,7 +302,7 @@ def process_account(acc):
 
         # === PHASE 1: Login Google ===
         driver.get('https://accounts.google.com/signin')
-        time.sleep(2)
+        time.sleep(1)
 
         # Cek apakah sudah login (redirect ke Google)
         if 'accounts.google.com' not in driver.current_url or 'signin' not in driver.current_url:
@@ -309,7 +312,7 @@ def process_account(acc):
             try:
                 driver.find_element(By.CSS_SELECTOR, '#identifierId').send_keys(base_email)
                 driver.find_element(By.CSS_SELECTOR, '#identifierNext').click()
-                time.sleep(3)
+                time.sleep(1)
                 driver.find_element(By.CSS_SELECTOR, 'input[type="password"]').send_keys(password)
                 driver.find_element(By.CSS_SELECTOR, '#passwordNext').click()
                 time.sleep(5)
@@ -349,7 +352,7 @@ def process_account(acc):
                                     break
                             break
                         except:
-                            time.sleep(2)
+                            time.sleep(1)
                     time.sleep(5)
                     # Re-check
                     if 'challenge' not in driver.current_url and 'signin' not in driver.current_url:
@@ -358,7 +361,7 @@ def process_account(acc):
                         log(f'  ⚠️ TOTP failed — need manual login')
                         # Fallback: manual wait
                         for i in range(60):
-                            time.sleep(2)
+                            time.sleep(1)
                             current = driver.current_url
                             if 'challenge' not in current and 'signin' not in current:
                                 log(f'  Login OK (manual)')
@@ -372,7 +375,7 @@ def process_account(acc):
                     log(f'  ⚠️ Need manual login/2FA — complete in Chrome window')
                     # Manual wait max 120 detik
                     for i in range(60):
-                        time.sleep(2)
+                        time.sleep(1)
                         current = driver.current_url
                         if 'challenge' not in current and 'signin' not in current:
                             log(f'  Login OK (manual)')
@@ -387,13 +390,13 @@ def process_account(acc):
 
         # === PHASE 2: Open poll ===
         driver.get(f'{CONFIG["voting"]["baseUrl"]}{CONFIG["voting"]["pollPath"]}?ref={CONFIG["vote"]["ref"]}&state=landing')
-        time.sleep(3)
+        time.sleep(1)
 
         # Bersihin SEMUA cookies + storage supaya treat sebagai user baru
         driver.delete_all_cookies()
         driver.execute_script('sessionStorage.clear(); localStorage.clear();')
         driver.get(f'{CONFIG["voting"]["baseUrl"]}{CONFIG["voting"]["pollPath"]}?ref={CONFIG["vote"]["ref"]}&state=landing')
-        time.sleep(3)
+        time.sleep(1)
 
         # === STEP 1: Email input form ===
         email_input = driver.find_element(By.CSS_SELECTOR, 'input[type="email"]')
@@ -404,7 +407,7 @@ def process_account(acc):
 
         # Turnstile — tunggu max 30 detik, log progress
         for i in range(15):
-            time.sleep(2)
+            time.sleep(1)
             r = driver.execute_script('return document.querySelector("[name=cf-turnstile-response]")?.value || "empty"')
             if r != 'empty':
                 log(f'  Turnstile OK')
@@ -442,12 +445,12 @@ def process_account(acc):
         if 'Langkah 1' in text or 'Kebijakan' in text or 'Syarat' in text:
             log(f'  Consent page detected, accepting T&C...')
             driver.execute_script('window.scrollTo(0, document.body.scrollHeight)')
-            time.sleep(0.3)
+            time.sleep(0.1)
             driver.execute_script('''
                 var cbs = document.querySelectorAll('input[type="checkbox"]');
                 for (var i = 0; i < cbs.length; i++) { if (!cbs[i].checked) cbs[i].click(); }
             ''')
-            time.sleep(0.3)
+            time.sleep(0.1)
             consent_result = driver.execute_script('''
                 var btns = document.querySelectorAll('button');
                 for (var i = 0; i < btns.length; i++) {
@@ -482,7 +485,7 @@ def process_account(acc):
                 }
                 return 'no button found';
             ''')
-            time.sleep(10)
+            time.sleep(1)
             text = driver.find_element(By.TAG_NAME, 'body').text
             log(f'  Page text after retry: {text[:200]}')
 
@@ -496,7 +499,7 @@ def process_account(acc):
                 }
             }
         ''')
-        time.sleep(3)
+        time.sleep(1)
 
         # Coba get OTP dari IMAP (timeout 90 detik — email mungkin delay)
         otp = get_otp(im_user=IMAP_USER, im_pass=IMAP_PASS, timeout=90)
@@ -510,14 +513,14 @@ def process_account(acc):
                         otp_input = inp
                         break
                 if otp_input: break
-                time.sleep(2)
+                time.sleep(1)
 
             if otp_input:
                 otp_input.click()
                 otp_input.clear()
                 otp_input.send_keys(otp)
                 log(f'  OTP typed')
-                time.sleep(2)
+                time.sleep(1)
                 try: otp_input.send_keys(Keys.RETURN)
                 except: pass
                 # Tunggu page transition setelah OTP submit
@@ -566,7 +569,7 @@ def process_account(acc):
                     return 'no sector found';
                 ''')
                 log(f'  → fallback iterate clicked')
-            time.sleep(0.5)
+            time.sleep(0.2)
             text = wait_for_text(driver, ['subsektor', 'pilih sub', 'banking'] + subsector_kw, timeout=2)
             log(f'  After sector: {text[:150]}...')
 
@@ -614,9 +617,9 @@ def process_account(acc):
                     if 'clicked' in found:
                         log(f'  → {found}')
                         break
-                    time.sleep(0.3)
+                    time.sleep(0.1)
                 log(f'  → fallback iterate clicked')
-            time.sleep(0.5)
+            time.sleep(0.2)
             # Klik "Lanjut" — PRIMARY: XPath
             lanjut_clicked = False
             try:
@@ -636,7 +639,7 @@ def process_account(acc):
                         }
                     }
                 ''')
-            time.sleep(0.5)
+            time.sleep(0.2)
             text = wait_for_text(driver, ['faktor', 'unggul', 'pilih faktor', 'menurut anda', 'logo'], timeout=2)
             log(f'  After subsector: {text[:150]}...')
 
@@ -665,10 +668,10 @@ def process_account(acc):
                     return 'not found: {search}';
                 ''')
                 log(f'    → {clicked}')
-                time.sleep(0.3)
-            time.sleep(0.5)
+                time.sleep(0.1)
+            time.sleep(0.2)
             driver.execute_script('window.scrollTo(0, document.body.scrollHeight)')
-            time.sleep(0.3)
+            time.sleep(0.1)
 
         # STEP 4: Submit / Lanjut — loop multi-step
         for submit_attempt in range(5):
@@ -704,7 +707,7 @@ def process_account(acc):
                     }}
                     return 'no {inst_name} found';
                 ''')
-                time.sleep(3)
+                time.sleep(1)
 
             # Coba klik Lanjut/Kirim/Submit
             submit_result = driver.execute_script('''
@@ -756,7 +759,7 @@ results = {'success': 0, 'failed': 0}
 
 for acc in ACCOUNTS:
     for attempt in range(3):
-        time.sleep(2)
+        time.sleep(1)
         if process_account(acc):
             results['success'] += 1
             break
