@@ -104,7 +104,7 @@ import pyotp
 # Gmail ignore dots di local part: a.b@c = ab@c = a..b@c
 # Voting site treat tiap kombinasi sebagai akun berbeda.
 # Generate variasi dengan insert dot di posisi berbeda.
-def generate_dot_variations(email, max_count=500):
+def generate_dot_variations(email, max_count=1000):
     """Generate dot variations dari email. a@b.com → [a@b.com, a.@b.com, ...]"""
     if '@' not in email:
         return [email]
@@ -231,7 +231,7 @@ def process_account(acc):
     password = acc['password']
     # Poll email: dot variation dari base_email, atau explicit dari accounts.json
     poll_email_base = acc.get('poll_email', base_email)
-    variations = generate_dot_variations(poll_email_base, max_count=500)
+    variations = generate_dot_variations(poll_email_base, max_count=1000)
     poll_email = variations[acc.get('variation_index', 0) % len(variations)]
     log(f'[{base_email}] poll_email={poll_email}')
 
