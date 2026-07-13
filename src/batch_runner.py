@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
-"""CX100 Batch Vote Runner — auto-increment variation_index per vote."""
+"""CX100 Batch Vote Runner — auto-increment variation_index per vote.
+Support midnight reset: kalau lewat 00:00, variation_index reset ke 1."""
 import json, time, subprocess, sys, os
+from datetime import datetime, timezone, timedelta
 
+WIB = timezone(timedelta(hours=7))
 ACCOUNTS_FILE = os.path.join(os.path.dirname(__file__), '..', 'accounts.json')
 VOTE_SCRIPT = os.path.join(os.path.dirname(__file__), 'test-vote.py')
 PYTHON = '/Users/trei/.local/bin/python3.11'
@@ -49,12 +52,22 @@ def main():
 
     success = 0
     failed = 0
+    current_index = start_index
+    start_date = datetime.now(WIB).date()
 
     for i in range(batch_size):
-        acc['variation_index'] = start_index + i
+        # === MIDNIGHT RESET: cek apakah tanggal berubah ===
+        now = datetime.now(WIB)
+        if now.date() != start_date:
+            print(f'\n🌙 MIDNIGHT RESET — tanggal berubah ke {now.date()}')
+            print(f'   variation_index: {current_index} → 1')
+            current_index = 1
+            start_date = now.date()
+
+        acc['variation_index'] = current_index
         save_accounts(accounts)
 
-        print(f'[{i+1}/{batch_size}] variation_index={acc["variation_index"]}')
+        print(f'[{i+1}/{batch_size}] variation_index={current_index} ({now.strftime("%H:%M:%S")})')
         try:
             ok = run_vote()
             if ok:
@@ -70,8 +83,7 @@ def main():
             failed += 1
             print(f'  ❌ ERROR: {str(e)[:80]} ({failed}/{i+1})')
 
-        # JANGAN kill Chrome — biarkan hidup untuk vote berikutnya
-        # Chrome hanya di-restart oleh process_account kalau crash/session expire
+        current_index += 1
 
         if i < batch_size - 1:
             print(f'  Waiting {delay}s...')
@@ -79,9 +91,9 @@ def main():
 
     print(f'\n=== BATCH DONE: {success}/{batch_size} success, {failed} failed ===')
 
-    acc['variation_index'] = start_index + batch_size
+    acc['variation_index'] = current_index
     save_accounts(accounts)
-    print(f'Next variation_index: {acc["variation_index"]}')
+    print(f'Next variation_index: {current_index}')
 
 if __name__ == '__main__':
     main()
