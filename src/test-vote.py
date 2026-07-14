@@ -132,7 +132,8 @@ def generate_dot_variations(email, max_count=1000):
 def log(msg):
     print(f'[{datetime.now().strftime("%H:%M:%S")}] {msg}')
 
-def get_otp(im_user=None, im_pass=None, timeout=90):
+def get_otp(im_user=None, im_pass=None, timeout=90, last_otp=None):
+    """Ambil OTP dari IMAP. Kalau sama dengan last_otp, skip dan fetch ulang."""
     im_user = im_user or IMAP_USER
     im_pass = im_pass or IMAP_PASS
     start = time.time()
@@ -162,6 +163,12 @@ def get_otp(im_user=None, im_pass=None, timeout=90):
                         body = str(msg.get_payload(decode=True))
                     m = re.search(r'\b(\d{4})\b', body)
                     if m:
+                        otp_code = m.group(1)
+                        # Skip kalau sama dengan OTP sebelumnya
+                        if last_otp and otp_code == last_otp:
+                            continue  # Fetch email berikutnya
+                        mail.logout()
+                        return otp_code
                         mail.logout()
                         return m.group(1)
             mail.logout()
@@ -262,7 +269,9 @@ def process_account(acc):
             chrome_opts = uc.ChromeOptions()
             chrome_opts.add_argument(f'--user-data-dir={chrome_user_data}')
             chrome_opts.add_argument('--disable-extensions')
-            driver = uc.Chrome(options=chrome_opts, headless=False, use_subprocess=True)
+            chrome_opts.add_argument('--no-sandbox')
+            chrome_opts.add_argument('--disable-dev-shm-usage')
+            driver = uc.Chrome(options=chrome_opts, headless=False, use_subprocess=True, version_main=150)
         else:
             driver = uc.Chrome(headless=False, use_subprocess=True)
         return driver
@@ -581,7 +590,7 @@ def process_account(acc):
             ''')
             time.sleep(2)
             # Ambil OTP dari email verifikasi
-            otp = get_otp(im_user=im_user, im_pass=im_pass, timeout=90)
+            otp = get_otp(im_user=im_user, im_pass=im_pass, timeout=90, last_otp=None)
             if otp:
                 log(f'  Pre Polling OTP: {otp}')
                 for inp in driver.find_elements(By.CSS_SELECTOR, 'input'):
@@ -633,7 +642,7 @@ def process_account(acc):
         time.sleep(1)
 
         # Coba get OTP dari IMAP (timeout 90 detik — email mungkin delay)
-        otp = get_otp(im_user=im_user, im_pass=im_pass, timeout=90)
+        otp = get_otp(im_user=im_user, im_pass=im_pass, timeout=90, last_otp=None)
         if otp:
             log(f'  OTP: {otp}')
             # Cari input field untuk OTP
@@ -676,7 +685,7 @@ def process_account(acc):
                         ''')
                         time.sleep(2)
                         # Ambil OTP baru dari email verifikasi
-                        otp2 = get_otp(im_user=im_user, im_pass=im_pass, timeout=90)
+                        otp2 = get_otp(im_user=im_user, im_pass=im_pass, timeout=90, last_otp=otp)
                         if otp2:
                             log(f'  Pre Polling OTP: {otp2}')
                             for inp in driver.find_elements(By.CSS_SELECTOR, 'input'):
