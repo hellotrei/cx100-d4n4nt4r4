@@ -12,7 +12,7 @@ Automasi voting untuk stress test polling CX100 Danantara. Menggunakan `undetect
 | Storage | 500 MB | 1 GB+ |
 | Chrome | v120+ | Latest stable |
 | Python | 3.11+ | 3.12+ |
-| Node.js | 18+ | 20+ (untuk evidence template) |
+| Node.js | 18+ | 20+ (untuk screenshot evidence) |
 
 **Catatan:**
 - macOS Apple Silicon (M1/M2/M3) ✅ supported
@@ -49,45 +49,21 @@ Script butuh 1 akun Gmail dengan:
 #### Simpan TOTP Secret:
 1. Saat setup 2FA Google, pastikan simpan **secret key** (bukan QR code)
 2. Secret biasanya 32 karakter (base32): `JBSWY3DPEHPK3PXP`
-3. Simpan di `.env` sebagai `TOTP_SECRET`
+3. Simpan di `accounts.json` sebagai `totp_secret`
 
-### 3. Setup .env
-
-```bash
-cp .env.example .env
-```
-
-Isi `.env`:
-
-```env
-# === IMAP (untuk auto-OTP) ===
-IMAP_USER=your_email@gmail.com
-IMAP_PASSWORD=xxxx xxxx xxxx xxxx    # App Password, bukan password biasa
-IMAP_HOST=74.125.24.108              # Gmail IMAP IP (bypass Avast proxy)
-IMAP_PORT=993
-IMAP_SERVERNAME=imap.gmail.com       # SNI hostname
-
-# === Google 2FA ===
-TOTP_SECRET=JBSWY3DPEHPK3PXP        # Secret key dari Google Authenticator
-
-# === Company (legacy, sekarang pakai config.json) ===
-COMPANY_NAME=Pegadaian
-```
-
-**⚠️ Penting:**
-- `IMAP_PASSWORD` = **App Password**, bukan password Gmail
-- `IMAP_HOST` = IP langsung `74.125.24.108` (bukan hostname) — bypass proxy/antivirus
-- `IMAP_SERVERNAME` = `imap.gmail.com` untuk SNI handshake
-
-### 4. Setup accounts.json
+### 3. Setup accounts.json
 
 ```json
 [
   {
-    "email": "aishahumairanaurashasmira@gmail.com",
-    "poll_email": "aishahumairanaurashasmira@googlemail.com",
-    "password": "Qwertyui00",
-    "variation_index": 1
+    "email": "your_email@gmail.com",
+    "poll_email": "your_email@googlemail.com",
+    "password": "your_google_password",
+    "variation_index": 1,
+    "imap_user": "your_email@gmail.com",
+    "imap_password": "xxxx xxxx xxxx xxxx",
+    "totp_secret": "JBSWY3DPEHPK3PXP",
+    "chrome_profile": ""
   }
 ]
 ```
@@ -98,11 +74,15 @@ COMPANY_NAME=Pegadaian
 | `poll_email` | Email yang dikirim ke polling site (bisa pakai `@googlemail.com`) |
 | `password` | Password Google |
 | `variation_index` | Index dot variation email (auto-increment) |
+| `imap_user` | Email untuk IMAP login (biasanya sama dengan `email`) |
+| `imap_password` | App Password untuk IMAP (16 karakter) |
+| `totp_secret` | Secret key Google Authenticator (32 karakter base32) |
+| `chrome_profile` | Path ke Chrome profile (kosong = pakai default) |
 
 **Dot Variation:**
-Gmail mengabaikan dot (`.`) di local part. `a.b@c.com` = `ab@c.com` = `a..b@c.com`. Voting site treat setiap variasi sebagai akun berbeda. Script auto-generate dot variations berdasarkan `variation_index`.
+Gmail mengabaikan dot (`.`) di local part. `a.b@c.com` = `ab@c.com` = `a..b@c.com`. Voting site treat setiap variasi sebagai akun berbeda. Script auto-generate dot variations berdasarkan `variation_index`. Max 1000 variations per email.
 
-### 5. Setup config.json
+### 4. Setup config.json
 
 Copy preset target:
 
@@ -154,7 +134,7 @@ Struktur `config.json`:
 
 ```bash
 # 1. Tutup Chrome dulu!
-# 2. Pastikan config.json sudah benar
+# 2. Pastikan accounts.json dan config.json sudah benar
 # 3. Jalankan:
 python3 src/test-vote.py
 ```
@@ -168,7 +148,7 @@ python3 src/batch_runner.py [jumlah] [delay_detik]
 # Contoh: 100 vote, delay 10 detik
 python3 src/batch_runner.py 100 10
 
-# Contoh: 250 vote, delay 15 detik (lebih aman)
+# Contoh: 250 vote, delay 15 detik (recommended)
 python3 src/batch_runner.py 250 15
 ```
 
@@ -176,10 +156,10 @@ python3 src/batch_runner.py 250 15
 
 ```bash
 # Jalankan di background, auto-notif selesai
-python3 src/batch_runner.py 100 10 2>&1 | tee /tmp/cx100_batch.log &
+python3 src/batch_runner.py 100 15 2>&1 | tee /tmp/cx100_batch.log &
 
 # Atau pakai nohup
-nohup python3 src/batch_runner.py 100 10 > /tmp/cx100_batch.log 2>&1 &
+nohup python3 src/batch_runner.py 100 15 > /tmp/cx100_batch.log 2>&1 &
 ```
 
 ### Switch Target
@@ -195,10 +175,22 @@ cp presets/pegadaian.json config.json
 # Edit accounts.json: "variation_index": 1
 ```
 
+### Generate Evidence (Tanpa Auto Vote)
+
+```bash
+# Generate evidence langsung (tanpa voting)
+python3 src/gen_evidence.py
+
+# Generate untuk Galeri 24 Pegadaian
+python3 src/gen_evidence_galeri24.py
+```
+
 ## Flow Voting
 
 ```
 Login Google (profile + auto-2FA)
+    ↓
+Re-authentication (kalau Google session expired)
     ↓
 Buka Polling Site
     ↓
@@ -208,7 +200,9 @@ Input Email (dot variation)
     ↓
 Submit → Consent/T&C Page
     ↓
-OTP Verification (auto via IMAP)
+OTP Verification (auto via IMAP, duplicate check)
+    ↓
+Pre Polling — Verifikasi Peserta (email verifikasi baru)
     ↓
 Pilih Sector → Subsector → Factors
     ↓
@@ -217,7 +211,7 @@ Pilih Institusi → Submit
 Screenshot Evidence (PNG)
 ```
 
-**Waktu per vote:** ~60-90 detik
+**Waktu per vote:** ~52-60 detik
 **Success rate:** 85-100% (tergantung rate limiting)
 
 ## Troubleshooting
@@ -227,30 +221,38 @@ Screenshot Evidence (PNG)
 | Google login failed | Profile expired/2FA | Re-login manual di Chrome |
 | Turnstile timeout | Extension blocking | Pastikan `--disable-extensions` |
 | OTP not found | App Password salah | Generate App Password baru |
+| OTP tidak valid | Kode sudah expired/duplikat | Script auto-fetch ulang dengan duplicate check |
 | "Langkah 1 dari 2" | Consent page | Script handle otomatis |
+| "Pre Polling — Verifikasi Peserta" | Email verifikasi baru | Script handle otomatis (OTP baru dari email) |
+| "Verify it's you" | Google re-auth | Script handle otomatis (Next → Password → TOTP) |
 | Factors not selected | Click header bukan card | Update `sectorKeywords` |
+| Subsector not clicked | Heading matched instead of card | Script skip heading elements |
 | Email already voted | Same dot variation | Auto-increment `variation_index` |
 | Rate limiting | Terlalu cepat | Naikkan delay ke 15-20 detik |
+| Midnight reset | Batch lewat 00:00 | Script auto-reset `variation_index` ke 1 |
 
 ## Struktur Project
 
 ```
 cx100-stress-test/
 ├── src/
-│   ├── test-vote.py          # Script utama (undetected-chromedriver)
-│   └── batch_runner.py       # Batch runner (auto-increment variation_index)
+│   ├── test-vote.py              # Script utama (undetected-chromedriver)
+│   ├── batch_runner.py           # Batch runner (auto-increment variation_index)
+│   ├── gen_evidence.py           # Evidence generator (Pegadaian)
+│   ├── gen_evidence_galeri24.py  # Evidence generator (Galeri 24)
+│   └── gen_evidence_alya_1000.py # Evidence generator (custom)
 ├── presets/
-│   ├── pegadaian.json        # Config Pegadaian
-│   └── galeri24.json         # Config Galeri 24 Pegadaian
+│   ├── pegadaian.json            # Config Pegadaian
+│   └── galeri24.json             # Config Galeri 24 Pegadaian
 ├── template/
-│   ├── index.html            # Template evidence HTML
-│   └── src/SS.png            # Background image
-├── evidence/                 # Output screenshots
-│   └── CX100 - DDMMYYYY/    # Folder per hari
-├── accounts.json             # Akun voting (gitignored)
-├── config.json               # Target voting (gitignored)
-├── .env                      # Secrets (gitignored)
-├── .env.example              # Template .env
+│   ├── index.html                # Template evidence HTML
+│   └── src/SS.png                # Background image
+├── evidence/                     # Output screenshots
+│   └── CX100 - DDMMYYYY/        # Folder per hari
+├── accounts.json                 # Akun voting (gitignored)
+├── config.json                   # Target voting (gitignored)
+├── .env                          # Secrets (gitignored, optional)
+├── .env.example                  # Template .env
 └── README.md
 ```
 
@@ -269,10 +271,11 @@ Contoh: `a.ishahumairanaurashasmira_20260711_230446.png`
 | Metric | Value |
 |--------|-------|
 | Success rate | 85-100% |
-| Waktu per vote | ~60-90 detik |
+| Waktu per vote | ~52-60 detik |
 | Batch 100 votes | ~1.5-2 jam |
 | Batch 250 votes | ~4-6 jam |
-| Variation capacity | 500+ email per akun |
+| Batch 1000 votes | ~15-18 jam |
+| Variation capacity | 1000 email per akun |
 
 ## Dependencies
 
@@ -283,7 +286,8 @@ Python:
 - pyotp
 
 Node.js:
-- playwright (untuk screenshot evidence)
+- playwright-extra
+- puppeteer-extra-plugin-stealth
 ```
 
 ## License
